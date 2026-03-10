@@ -70,6 +70,7 @@ pub struct FamilyTreeNode {
     pub id: RecordId,
     pub family_name: String,
     pub first_name: String,
+    pub image_path: Option<String>,
     /// Father's node with their ancestors (2 generations deep).
     #[serde(default)]
     pub father: Vec<FamilyTreeNode>,

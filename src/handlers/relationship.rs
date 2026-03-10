@@ -220,6 +220,7 @@ fn build_tree_node(
                 id: person.id,
                 family_name: person.family_name,
                 first_name: person.first_name,
+                image_path: person.image_path,
                 father: vec![],
                 mother: vec![],
             });
@@ -242,6 +243,7 @@ fn build_tree_node(
             id: person.id,
             family_name: person.family_name,
             first_name: person.first_name,
+            image_path: person.image_path,
             father,
             mother,
         })
