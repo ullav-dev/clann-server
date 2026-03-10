@@ -6,7 +6,7 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
-use surrealdb::types::{RecordId, SurrealValue};
+use surrealdb::types::{RecordId, RecordIdKey, SurrealValue};
 
 use crate::{
     db::Db,
@@ -25,6 +25,13 @@ fn parse_record_id(s: &str) -> Result<RecordId, AppError> {
         .split_once(':')
         .ok_or_else(|| AppError::BadRequest(format!("Expected 'table:id', got: {s}")))?;
     Ok(RecordId::new(tb, id))
+}
+
+fn record_id_key(id: &RecordId) -> String {
+    match &id.key {
+        RecordIdKey::String(k) => k.clone(),
+        other => format!("{other:?}"),
+    }
 }
 
 #[derive(Deserialize, SurrealValue)]
@@ -86,6 +93,17 @@ pub async fn add_relationship(
                 .bind(("st", st))
                 .await?;
         }
+        RelationshipType::Spouse => {
+            // Add both directions so either person can find the other via a forward query.
+            db.query("RELATE $from->has_spouse->$to")
+                .bind(("from", from.clone()))
+                .bind(("to", to.clone()))
+                .await?;
+            db.query("RELATE $to->has_spouse->$from")
+                .bind(("from", from))
+                .bind(("to", to))
+                .await?;
+        }
     }
 
     Ok(StatusCode::CREATED)
@@ -134,7 +152,7 @@ pub async fn get_relationships(
         .query(
             "SELECT ->has_sibling->person.* AS out_siblings, <-has_sibling<-person.* AS in_siblings FROM $id",
         )
-        .bind(("id", person_id))
+        .bind(("id", person_id.clone()))
         .await?;
     let siblings: Vec<Person> = sib_res
         .take::<Vec<SiblingsRow>>(0)?
@@ -142,7 +160,10 @@ pub async fn get_relationships(
         .flat_map(|r| r.out_siblings.into_iter().chain(r.in_siblings))
         .collect();
 
-    Ok(Json(RelationshipsResponse { father, mother, siblings }))
+    // Spouses: bidirectional edges exist, so forward query is sufficient.
+    let spouse = fetch_spouses(&db, &person_id).await?;
+
+    Ok(Json(RelationshipsResponse { father, mother, siblings, spouse }))
 }
 
 #[utoipa::path(
@@ -150,7 +171,7 @@ pub async fn get_relationships(
     path = "/api/persons/{id}/relationships/{rel_type}/{related_id}",
     params(
         ("id" = String, Path, description = "Person record ID (without the `person:` prefix)"),
-        ("rel_type" = String, Path, description = "Relationship table: `has_father`, `has_mother`, or `has_sibling`"),
+        ("rel_type" = String, Path, description = "Relationship table: `has_father`, `has_mother`, `has_sibling`, or `has_spouse`"),
         ("related_id" = String, Path, description = "Full related record ID, e.g. `person:01jd4a8xyz`"),
     ),
     responses(
@@ -164,17 +185,22 @@ pub async fn delete_relationship(
     Path((id, rel_type, related_id)): Path<(String, String, String)>,
 ) -> Result<StatusCode, AppError> {
     // Validate rel_type against the whitelist before embedding it in the query string.
-    let _valid = RelationshipType::from_str(&rel_type)
+    let valid = RelationshipType::from_str(&rel_type)
         .ok_or_else(|| AppError::InvalidRelType(format!("Unknown relationship type: {}", rel_type)))?;
 
     let from = RecordId::new("person", id.as_str());
     let to = parse_record_id(&related_id)?;
 
-    let query = format!("DELETE {} WHERE in = $from AND out = $to", rel_type);
-    db.query(query)
-        .bind(("from", from))
-        .bind(("to", to))
-        .await?;
+    if matches!(valid, RelationshipType::Spouse) {
+        // Spouse edges are bidirectional — delete both directions.
+        let q = format!(
+            "DELETE {rel_type} WHERE (in = $from AND out = $to) OR (in = $to AND out = $from)"
+        );
+        db.query(q).bind(("from", from)).bind(("to", to)).await?;
+    } else {
+        let query = format!("DELETE {} WHERE in = $from AND out = $to", rel_type);
+        db.query(query).bind(("from", from)).bind(("to", to)).await?;
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -190,7 +216,7 @@ pub async fn delete_relationship(
             status = 200,
             description = "Family tree up to 2 generations deep. \
                            Each node: `{ id, family_name, first_name, \
-                           father: [node…], mother: [node…] }`"
+                           father: [node…], mother: [node…], children: [node…], spouse: [node…] }`"
         ),
         (status = 404, description = "Person not found", body = ErrorResponse),
     ),
@@ -207,26 +233,30 @@ pub async fn get_family_tree(
     Ok(Json(node))
 }
 
-/// Recursively build a `FamilyTreeNode` up to `depth` generations using simple
-/// per-relation queries rather than a single nested SurrealQL projection.
-/// `include_children` is true only for the root call — it fetches people who
-/// have this person as their father or mother and attaches them as leaf nodes.
+/// Recursively build a `FamilyTreeNode` up to `depth` generations.
+/// `include_root_extras` is true only for the root call — fetches children and spouses.
 fn build_tree_node(
     db: Db,
     person: Person,
     depth: u8,
-    include_children: bool,
+    include_root_extras: bool,
 ) -> Pin<Box<dyn Future<Output = Result<FamilyTreeNode, AppError>> + Send>> {
     Box::pin(async move {
-        let children = if include_children {
+        let (children, spouse) = if include_root_extras {
             let child_persons = fetch_children(&db, &person.id).await?;
-            let mut nodes = Vec::new();
+            let spouse_persons = fetch_spouses(&db, &person.id).await?;
+
+            let mut child_nodes = Vec::new();
             for p in child_persons {
-                nodes.push(build_tree_node(db.clone(), p, 0, false).await?);
+                child_nodes.push(build_tree_node(db.clone(), p, 0, false).await?);
             }
-            nodes
+            let mut spouse_nodes = Vec::new();
+            for p in spouse_persons {
+                spouse_nodes.push(build_tree_node(db.clone(), p, 0, false).await?);
+            }
+            (child_nodes, spouse_nodes)
         } else {
-            vec![]
+            (vec![], vec![])
         };
 
         if depth == 0 {
@@ -238,6 +268,7 @@ fn build_tree_node(
                 father: vec![],
                 mother: vec![],
                 children,
+                spouse,
             });
         }
 
@@ -262,6 +293,7 @@ fn build_tree_node(
             father,
             mother,
             children,
+            spouse,
         })
     })
 }
@@ -296,15 +328,20 @@ async fn fetch_children(db: &Db, parent_id: &RecordId) -> Result<Vec<Person>, Ap
         )
         .collect();
 
-    // Deduplicate by ULID key in case a person appears via both has_father and has_mother.
+    // Deduplicate by ULID key.
     let mut seen = std::collections::HashSet::new();
-    all.retain(|p| {
-        let key = match &p.id.key {
-            surrealdb::types::RecordIdKey::String(k) => k.clone(),
-            other => format!("{other:?}"),
-        };
-        seen.insert(key)
-    });
+    all.retain(|p| seen.insert(record_id_key(&p.id)));
 
     Ok(all)
+}
+
+/// Fetch spouses. Because `has_spouse` edges are added bidirectionally,
+/// a simple forward query is sufficient.
+async fn fetch_spouses(db: &Db, person_id: &RecordId) -> Result<Vec<Person>, AppError> {
+    let mut res = db
+        .query("SELECT ->has_spouse->person.* AS persons FROM $id")
+        .bind(("id", person_id.clone()))
+        .await?;
+    let rows: Vec<PersonsRow> = res.take(0)?;
+    Ok(rows.into_iter().flat_map(|r| r.persons).collect())
 }

@@ -18,6 +18,7 @@ pub enum RelationshipType {
     Father,
     Mother,
     Sibling,
+    Spouse,
 }
 
 impl RelationshipType {
@@ -26,6 +27,7 @@ impl RelationshipType {
             RelationshipType::Father => "has_father",
             RelationshipType::Mother => "has_mother",
             RelationshipType::Sibling => "has_sibling",
+            RelationshipType::Spouse => "has_spouse",
         }
     }
 
@@ -34,6 +36,7 @@ impl RelationshipType {
             "has_father" => Some(Self::Father),
             "has_mother" => Some(Self::Mother),
             "has_sibling" => Some(Self::Sibling),
+            "has_spouse" => Some(Self::Spouse),
             _ => None,
         }
     }
@@ -60,6 +63,7 @@ pub struct RelationshipsResponse {
     pub father: Vec<Person>,
     pub mother: Vec<Person>,
     pub siblings: Vec<Person>,
+    pub spouse: Vec<Person>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -81,4 +85,7 @@ pub struct FamilyTreeNode {
     /// Only populated for the root node.
     #[serde(default)]
     pub children: Vec<FamilyTreeNode>,
+    /// Spouses. Only populated for the root node.
+    #[serde(default)]
+    pub spouse: Vec<FamilyTreeNode>,
 }
