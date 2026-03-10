@@ -7,6 +7,7 @@ DEFINE FIELD IF NOT EXISTS date_of_birth  ON TABLE person TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS place_of_birth ON TABLE person TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS date_of_death  ON TABLE person TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS place_of_death ON TABLE person TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS image_path    ON TABLE person TYPE option<string>;
 
 DEFINE TABLE IF NOT EXISTS has_father  TYPE RELATION IN person OUT person SCHEMAFULL;
 DEFINE TABLE IF NOT EXISTS has_mother  TYPE RELATION IN person OUT person SCHEMAFULL;

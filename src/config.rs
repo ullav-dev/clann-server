@@ -5,6 +5,7 @@ pub struct Config {
     pub db_username: String,
     pub db_password: String,
     pub server_port: u16,
+    pub upload_dir: String,
 }
 
 impl Config {
@@ -19,6 +20,7 @@ impl Config {
                 .ok()
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(3000),
+            upload_dir: std::env::var("UPLOAD_DIR").unwrap_or_else(|_| "./uploads".to_string()),
         }
     }
 }

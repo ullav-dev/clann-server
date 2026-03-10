@@ -1,6 +1,14 @@
 use serde::{Deserialize, Serialize};
-use surrealdb::types::RecordId;
+use surrealdb::types::{RecordId, RecordIdKey};
 use utoipa::ToSchema;
+
+fn serialize_record_id<S: serde::Serializer>(id: &RecordId, s: S) -> Result<S::Ok, S::Error> {
+    let key_str = match &id.key {
+        RecordIdKey::String(k) => k.clone(),
+        other => format!("{other:?}"),
+    };
+    s.serialize_str(&format!("{}:{}", id.table, key_str))
+}
 
 use super::person::Person;
 
@@ -58,6 +66,7 @@ pub struct RelationshipsResponse {
 pub struct FamilyTreeNode {
     /// Record ID in the form `person:<ulid>`.
     #[schema(value_type = String, example = "person:01jd4a8xyz")]
+    #[serde(serialize_with = "serialize_record_id")]
     pub id: RecordId,
     pub family_name: String,
     pub first_name: String,

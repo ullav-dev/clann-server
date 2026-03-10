@@ -1,18 +1,19 @@
 use axum::{
     routing::{delete, get, post},
-    Router,
+    Extension, Router,
 };
 
 use crate::{
     db::Db,
     handlers::{
+        image::{get_image, upload_image},
         person::{create_person, delete_person, get_person, list_persons, update_person},
         relationship::{add_relationship, delete_relationship, get_family_tree, get_relationships},
     },
     openapi::{openapi_json, swagger_ui},
 };
 
-pub fn build_router(db: Db) -> Router {
+pub fn build_router(db: Db, upload_dir: String) -> Router {
     Router::new()
         // API docs
         .route("/api-docs/openapi.json", get(openapi_json))
@@ -22,6 +23,11 @@ pub fn build_router(db: Db) -> Router {
         .route(
             "/api/persons/{id}",
             get(get_person).put(update_person).delete(delete_person),
+        )
+        // Images
+        .route(
+            "/api/persons/{id}/image",
+            post(upload_image).get(get_image),
         )
         // Relationships
         .route(
@@ -33,5 +39,6 @@ pub fn build_router(db: Db) -> Router {
             delete(delete_relationship),
         )
         .route("/api/persons/{id}/family-tree", get(get_family_tree))
+        .layer(Extension(upload_dir))
         .with_state(db)
 }

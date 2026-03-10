@@ -22,6 +22,8 @@ use crate::{
         crate::handlers::person::get_person,
         crate::handlers::person::update_person,
         crate::handlers::person::delete_person,
+        crate::handlers::image::upload_image,
+        crate::handlers::image::get_image,
         crate::handlers::relationship::add_relationship,
         crate::handlers::relationship::get_relationships,
         crate::handlers::relationship::delete_relationship,

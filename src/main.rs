@@ -12,7 +12,8 @@ async fn main() -> anyhow::Result<()> {
 
     let config = config::Config::from_env();
     let db = db::connect(&config).await?;
-    let router = routes::build_router(db);
+    tokio::fs::create_dir_all(&config.upload_dir).await?;
+    let router = routes::build_router(db, config.upload_dir.clone());
 
     let addr = format!("0.0.0.0:{}", config.server_port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;

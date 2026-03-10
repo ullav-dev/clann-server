@@ -18,8 +18,8 @@ async fn setup() -> axum::Router {
 
     let db: Db = any::connect("mem://").await.unwrap();
     db.signin(Root {
-        username: "root",
-        password: "root",
+        username: "root".to_string(),
+        password: "root".to_string(),
     })
     .await
     .ok(); // embedded engine may not require auth
@@ -28,7 +28,7 @@ async fn setup() -> axum::Router {
     let schema = include_str!("../migrations/schema.surql");
     db.query(schema).await.unwrap();
 
-    build_router(db)
+    build_router(db, std::env::temp_dir().to_string_lossy().into_owned())
 }
 
 async fn response_json(response: axum::response::Response) -> Value {
