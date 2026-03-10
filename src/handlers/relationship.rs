@@ -203,18 +203,32 @@ pub async fn get_family_tree(
     let person: Option<Person> = db.select(("person", id.as_str())).await?;
     let person = person.ok_or(AppError::NotFound)?;
 
-    let node = build_tree_node(db, person, 2).await?;
+    let node = build_tree_node(db, person, 2, true).await?;
     Ok(Json(node))
 }
 
 /// Recursively build a `FamilyTreeNode` up to `depth` generations using simple
 /// per-relation queries rather than a single nested SurrealQL projection.
+/// `include_children` is true only for the root call — it fetches people who
+/// have this person as their father or mother and attaches them as leaf nodes.
 fn build_tree_node(
     db: Db,
     person: Person,
     depth: u8,
+    include_children: bool,
 ) -> Pin<Box<dyn Future<Output = Result<FamilyTreeNode, AppError>> + Send>> {
     Box::pin(async move {
+        let children = if include_children {
+            let child_persons = fetch_children(&db, &person.id).await?;
+            let mut nodes = Vec::new();
+            for p in child_persons {
+                nodes.push(build_tree_node(db.clone(), p, 0, false).await?);
+            }
+            nodes
+        } else {
+            vec![]
+        };
+
         if depth == 0 {
             return Ok(FamilyTreeNode {
                 id: person.id,
@@ -223,6 +237,7 @@ fn build_tree_node(
                 image_path: person.image_path,
                 father: vec![],
                 mother: vec![],
+                children,
             });
         }
 
@@ -231,12 +246,12 @@ fn build_tree_node(
 
         let mut father = Vec::new();
         for p in father_persons {
-            father.push(build_tree_node(db.clone(), p, depth - 1).await?);
+            father.push(build_tree_node(db.clone(), p, depth - 1, false).await?);
         }
 
         let mut mother = Vec::new();
         for p in mother_persons {
-            mother.push(build_tree_node(db.clone(), p, depth - 1).await?);
+            mother.push(build_tree_node(db.clone(), p, depth - 1, false).await?);
         }
 
         Ok(FamilyTreeNode {
@@ -246,6 +261,7 @@ fn build_tree_node(
             image_path: person.image_path,
             father,
             mother,
+            children,
         })
     })
 }
@@ -255,4 +271,40 @@ async fn fetch_relatives(db: &Db, from: &RecordId, rel: &str) -> Result<Vec<Pers
     let mut res = db.query(query).bind(("id", from.clone())).await?;
     let rows: Vec<PersonsRow> = res.take(0)?;
     Ok(rows.into_iter().flat_map(|r| r.persons).collect())
+}
+
+/// Fetch all people who have `parent_id` as their father or mother.
+async fn fetch_children(db: &Db, parent_id: &RecordId) -> Result<Vec<Person>, AppError> {
+    let mut father_res = db
+        .query("SELECT <-has_father<-person.* AS persons FROM $id")
+        .bind(("id", parent_id.clone()))
+        .await?;
+    let mut mother_res = db
+        .query("SELECT <-has_mother<-person.* AS persons FROM $id")
+        .bind(("id", parent_id.clone()))
+        .await?;
+
+    let mut all: Vec<Person> = father_res
+        .take::<Vec<PersonsRow>>(0)?
+        .into_iter()
+        .flat_map(|r| r.persons)
+        .chain(
+            mother_res
+                .take::<Vec<PersonsRow>>(0)?
+                .into_iter()
+                .flat_map(|r| r.persons),
+        )
+        .collect();
+
+    // Deduplicate by ULID key in case a person appears via both has_father and has_mother.
+    let mut seen = std::collections::HashSet::new();
+    all.retain(|p| {
+        let key = match &p.id.key {
+            surrealdb::types::RecordIdKey::String(k) => k.clone(),
+            other => format!("{other:?}"),
+        };
+        seen.insert(key)
+    });
+
+    Ok(all)
 }

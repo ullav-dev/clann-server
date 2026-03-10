@@ -77,4 +77,8 @@ pub struct FamilyTreeNode {
     /// Mother's node with their ancestors (2 generations deep).
     #[serde(default)]
     pub mother: Vec<FamilyTreeNode>,
+    /// Direct children (people for whom this node is father or mother).
+    /// Only populated for the root node.
+    #[serde(default)]
+    pub children: Vec<FamilyTreeNode>,
 }
