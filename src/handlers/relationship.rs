@@ -382,7 +382,9 @@ async fn fetch_spouses(db: &Db, person_id: &RecordId) -> Result<Vec<SpouseInfo>,
         { id: out.id, family_name: out.family_name, first_name: out.first_name, \
           middle_name: out.middle_name, sex: out.sex, date_of_birth: out.date_of_birth, \
           place_of_birth: out.place_of_birth, date_of_death: out.date_of_death, \
-          place_of_death: out.place_of_death, image_path: out.image_path } AS person, \
+          place_of_death: out.place_of_death, image_path: out.image_path, \
+          nickname: out.nickname, username: out.username, email: out.email, \
+          verified: out.verified, biography: out.biography } AS person, \
         spouse_from, spouse_to \
         FROM has_spouse WHERE in = $id";
 

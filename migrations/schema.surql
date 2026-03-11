@@ -11,6 +11,8 @@ DEFINE FIELD IF NOT EXISTS image_path    ON TABLE person TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS nickname      ON TABLE person TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS username      ON TABLE person TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS email         ON TABLE person TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS verified      ON TABLE person TYPE bool DEFAULT false;
+DEFINE FIELD IF NOT EXISTS biography     ON TABLE person TYPE option<string> ASSERT $value = NONE OR string::len($value) <= 1000;
 
 DEFINE TABLE IF NOT EXISTS has_father  TYPE RELATION IN person OUT person SCHEMAFULL;
 DEFINE TABLE IF NOT EXISTS has_mother  TYPE RELATION IN person OUT person SCHEMAFULL;

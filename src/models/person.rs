@@ -66,6 +66,11 @@ pub struct Person {
     pub nickname: Option<String>,
     pub username: Option<String>,
     pub email: Option<String>,
+    /// Whether this person's identity has been verified. Defaults to `false`.
+    #[serde(default)]
+    pub verified: bool,
+    /// Short biography, up to 1000 characters.
+    pub biography: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, SurrealValue)]
@@ -89,6 +94,8 @@ pub struct CreatePerson {
     pub username: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub biography: Option<String>,
 }
 
 /// All fields are optional; only supplied fields are updated (MERGE semantics).
@@ -116,4 +123,8 @@ pub struct UpdatePerson {
     pub username: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub biography: Option<String>,
 }
