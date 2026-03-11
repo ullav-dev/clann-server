@@ -61,6 +61,24 @@ All configuration is via environment variables:
 | `PUT`    | `/api/persons/{id}`   | Update a person      |
 | `DELETE` | `/api/persons/{id}`   | Delete a person      |
 
+**Person fields:**
+
+| Field            | Required | Description                              |
+|------------------|----------|------------------------------------------|
+| `family_name`    | yes      |                                          |
+| `first_name`     | yes      |                                          |
+| `sex`            | yes      | `"Male"` or `"Female"`                   |
+| `middle_name`    | no       |                                          |
+| `date_of_birth`  | no       | ISO 8601 or free-form string             |
+| `place_of_birth` | no       |                                          |
+| `date_of_death`  | no       |                                          |
+| `place_of_death` | no       |                                          |
+| `nickname`       | no       |                                          |
+| `username`       | no       |                                          |
+| `email`          | no       |                                          |
+
+`PUT` uses MERGE semantics — only supplied fields are updated. Omitted or `null` fields leave the existing value unchanged.
+
 ### Images
 
 | Method | Path                       | Description                              |
@@ -120,4 +138,4 @@ cargo clippy      # Lint
 cargo fmt         # Format
 ```
 
-Tests use an in-memory SurrealDB instance with an isolated namespace per test — no external database needed.
+Tests use an in-memory SurrealDB instance with an isolated namespace per test — no external database or services needed.

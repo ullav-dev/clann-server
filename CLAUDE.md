@@ -31,7 +31,7 @@ src/config.rs                  Config::from_env()
 src/db.rs                      connect() runs schema migration; pub type Db = Surreal<Any>
 src/error.rs                   AppError → JSON { "error": "..." }
 src/lib.rs                     pub mod declarations for integration tests
-src/models/person.rs           Person, CreatePerson, UpdatePerson, Sex
+src/models/person.rs           Person, CreatePerson, UpdatePerson, Sex — includes nickname, username, email
 src/models/relationship.rs     RelationshipType, FamilyTreeNode, SpouseInfo, etc.
 src/handlers/person.rs         CRUD handlers
 src/handlers/relationship.rs   relationship + family tree handlers
@@ -39,7 +39,7 @@ src/handlers/image.rs          image upload/retrieval handlers
 src/openapi.rs                 ApiDoc, swagger_ui(), openapi_json()
 src/routes/mod.rs              build_router(db, upload_dir)
 migrations/schema.surql        SurrealDB schema (run at startup via include_str!)
-tests/api.rs                   integration tests (23 tests)
+tests/api.rs                   integration tests (33 tests)
 ```
 
 ## Environment variables
@@ -63,7 +63,7 @@ tests/api.rs                   integration tests (23 tests)
 
 ## Testing
 
-Integration tests use `any::connect("mem://")` with a unique namespace/database per test (via `AtomicU64` counter) for isolation. Each test calls `setup()` which connects, runs the schema migration, and returns a `Router`.
+Integration tests use `any::connect("mem://")` with a unique namespace/database per test (via `AtomicU64` counter) for isolation. Each test calls `setup()` which connects, runs the schema migration, and returns a `Router`. No external database or services required to run tests.
 
 ## Relationship types
 
