@@ -24,6 +24,9 @@ pub async fn connect(config: &Config) -> anyhow::Result<Db> {
     let schema = include_str!("../migrations/schema.surql");
     db.query(schema).await?;
 
+    // Backfill any records created before the `verified` field was introduced.
+    db.query("UPDATE person SET verified = false WHERE verified = NONE").await?;
+
     tracing::info!("Connected to SurrealDB at {}", config.db_url);
 
     Ok(db)
