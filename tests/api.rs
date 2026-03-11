@@ -70,6 +70,15 @@ fn delete(uri: &str) -> Request<Body> {
         .unwrap()
 }
 
+fn patch_json(uri: &str, body: Value) -> Request<Body> {
+    Request::builder()
+        .method("PATCH")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
 /// Extract the bare record ID from a SurrealDB Thing, however it is serialized.
 ///
 /// SurrealDB v2 serializes `Thing` as an object:
@@ -582,4 +591,286 @@ async fn test_family_tree_returns_nested_ancestors() {
     assert_eq!(body["first_name"], "Child");
     assert_eq!(body["father"][0]["first_name"], "Dad");
     assert_eq!(body["father"][0]["father"][0]["first_name"], "Grandpa");
+}
+
+// ── Person profile fields (nickname / username / email) ──────────────────────
+
+#[tokio::test]
+async fn test_create_person_with_profile_fields() {
+    let app = setup().await;
+    let (status, body) = create_person_req(
+        app,
+        json!({
+            "family_name": "Kelly",
+            "first_name": "Niamh",
+            "sex": "Female",
+            "nickname": "Neve",
+            "username": "nkelly",
+            "email": "niamh@example.com",
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["nickname"], "Neve");
+    assert_eq!(body["username"], "nkelly");
+    assert_eq!(body["email"], "niamh@example.com");
+}
+
+#[tokio::test]
+async fn test_profile_fields_are_null_when_not_set() {
+    let app = setup().await;
+    let (_, body) = create_person_req(
+        app,
+        json!({"family_name": "Ryan", "first_name": "Cian", "sex": "Male"}),
+    )
+    .await;
+
+    assert!(body["nickname"].is_null());
+    assert!(body["username"].is_null());
+    assert!(body["email"].is_null());
+}
+
+#[tokio::test]
+async fn test_update_person_profile_fields() {
+    let app = setup().await;
+    let (_, created) = create_person_req(
+        app.clone(),
+        json!({"family_name": "Burke", "first_name": "Aoife", "sex": "Female"}),
+    )
+    .await;
+    let id = record_id(&created);
+
+    let response = app
+        .clone()
+        .oneshot(put_json(
+            &format!("/api/persons/{}", id),
+            json!({"nickname": "Aoif", "username": "aburke", "email": "aoife@example.com"}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["nickname"], "Aoif");
+    assert_eq!(body["username"], "aburke");
+    assert_eq!(body["email"], "aoife@example.com");
+    assert_eq!(body["first_name"], "Aoife"); // other fields unchanged
+}
+
+#[tokio::test]
+async fn test_update_omits_null_fields_leaving_existing_values_intact() {
+    // UpdatePerson uses skip_serializing_if = "Option::is_none", so null fields
+    // are dropped from the MERGE payload and existing DB values are preserved.
+    let app = setup().await;
+    let (_, created) = create_person_req(
+        app.clone(),
+        json!({
+            "family_name": "Flynn",
+            "first_name": "Oisín",
+            "sex": "Male",
+            "nickname": "Osh",
+        }),
+    )
+    .await;
+    let id = record_id(&created);
+
+    let response = app
+        .clone()
+        .oneshot(put_json(
+            &format!("/api/persons/{}", id),
+            json!({"nickname": null, "first_name": "Oisín Updated"}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    // null was skipped — nickname retains its original value
+    assert_eq!(body["nickname"], "Osh");
+    assert_eq!(body["first_name"], "Oisín Updated");
+}
+
+// ── Spouse relationship ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_add_spouse_relationship_returns_201() {
+    let app = setup().await;
+    let a_id = make_person(app.clone(), "Bride", "Female").await;
+    let b_id = format!("person:{}", make_person(app.clone(), "Groom", "Male").await);
+
+    let response = app
+        .oneshot(post_json(
+            &format!("/api/persons/{}/relationships", a_id),
+            json!({"type": "Spouse", "related_id": b_id}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn test_spouse_relationship_is_bidirectional() {
+    let app = setup().await;
+    let a_id = make_person(app.clone(), "Alice", "Female").await;
+    let b_id = make_person(app.clone(), "Bob", "Male").await;
+
+    app.clone()
+        .oneshot(post_json(
+            &format!("/api/persons/{}/relationships", a_id),
+            json!({"type": "Spouse", "related_id": format!("person:{}", b_id)}),
+        ))
+        .await
+        .unwrap();
+
+    // Bob's relationships should list Alice as spouse
+    let response = app
+        .oneshot(get(&format!("/api/persons/{}/relationships", b_id)))
+        .await
+        .unwrap();
+    let body = response_json(response).await;
+    assert_eq!(body["spouse"].as_array().unwrap().len(), 1);
+    assert_eq!(body["spouse"][0]["first_name"], "Alice");
+}
+
+#[tokio::test]
+async fn test_spouse_relationship_with_dates() {
+    let app = setup().await;
+    let a_id = make_person(app.clone(), "Pat", "Male").await;
+    let b_id = make_person(app.clone(), "Sam", "Female").await;
+
+    app.clone()
+        .oneshot(post_json(
+            &format!("/api/persons/{}/relationships", a_id),
+            json!({
+                "type": "Spouse",
+                "related_id": format!("person:{}", b_id),
+                "spouse_from": "2000-07-14",
+                "spouse_to": "2015-03-01",
+            }),
+        ))
+        .await
+        .unwrap();
+
+    let response = app
+        .oneshot(get(&format!("/api/persons/{}/relationships", a_id)))
+        .await
+        .unwrap();
+    let body = response_json(response).await;
+    let spouse = &body["spouse"][0];
+    assert_eq!(spouse["first_name"], "Sam");
+    assert_eq!(spouse["spouse_from"], "2000-07-14");
+    assert_eq!(spouse["spouse_to"], "2015-03-01");
+}
+
+#[tokio::test]
+async fn test_update_spouse_dates() {
+    let app = setup().await;
+    let a_id = make_person(app.clone(), "Jamie", "Male").await;
+    let b_id = make_person(app.clone(), "Robin", "Female").await;
+    let b_full = format!("person:{}", b_id);
+
+    app.clone()
+        .oneshot(post_json(
+            &format!("/api/persons/{}/relationships", a_id),
+            json!({"type": "Spouse", "related_id": b_full.clone()}),
+        ))
+        .await
+        .unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(patch_json(
+            &format!("/api/persons/{}/spouse-dates/{}", a_id, b_full),
+            json!({"spouse_from": "1999-05-20", "spouse_to": null}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    // Confirm dates persisted
+    let response = app
+        .oneshot(get(&format!("/api/persons/{}/relationships", a_id)))
+        .await
+        .unwrap();
+    let body = response_json(response).await;
+    assert_eq!(body["spouse"][0]["spouse_from"], "1999-05-20");
+}
+
+#[tokio::test]
+async fn test_delete_spouse_relationship_removes_both_directions() {
+    let app = setup().await;
+    let a_id = make_person(app.clone(), "Lee", "Male").await;
+    let b_id = make_person(app.clone(), "Jordan", "Female").await;
+    let b_full = format!("person:{}", b_id);
+
+    app.clone()
+        .oneshot(post_json(
+            &format!("/api/persons/{}/relationships", a_id),
+            json!({"type": "Spouse", "related_id": b_full.clone()}),
+        ))
+        .await
+        .unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(delete(&format!(
+            "/api/persons/{}/relationships/has_spouse/{}",
+            a_id, b_full
+        )))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    // Neither side should show the other as spouse
+    for id in [&a_id, &b_id] {
+        let response = app
+            .clone()
+            .oneshot(get(&format!("/api/persons/{}/relationships", id)))
+            .await
+            .unwrap();
+        let body = response_json(response).await;
+        assert_eq!(body["spouse"].as_array().unwrap().len(), 0, "spouse list should be empty for {id}");
+    }
+}
+
+// ── Family tree with spouse and children ─────────────────────────────────────
+
+#[tokio::test]
+async fn test_family_tree_includes_spouse_and_children() {
+    let app = setup().await;
+    let parent_id = make_person(app.clone(), "Parent", "Male").await;
+    let spouse_id = make_person(app.clone(), "Spouse", "Female").await;
+    let child_id = make_person(app.clone(), "Child", "Male").await;
+
+    // parent married spouse
+    app.clone()
+        .oneshot(post_json(
+            &format!("/api/persons/{}/relationships", parent_id),
+            json!({"type": "Spouse", "related_id": format!("person:{}", spouse_id)}),
+        ))
+        .await
+        .unwrap();
+
+    // child's father is parent
+    app.clone()
+        .oneshot(post_json(
+            &format!("/api/persons/{}/relationships", child_id),
+            json!({"type": "Father", "related_id": format!("person:{}", parent_id)}),
+        ))
+        .await
+        .unwrap();
+
+    let response = app
+        .oneshot(get(&format!("/api/persons/{}/family-tree", parent_id)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["first_name"], "Parent");
+    assert_eq!(body["spouse"].as_array().unwrap().len(), 1);
+    assert_eq!(body["spouse"][0]["first_name"], "Spouse");
+    assert_eq!(body["children"].as_array().unwrap().len(), 1);
+    assert_eq!(body["children"][0]["first_name"], "Child");
 }
