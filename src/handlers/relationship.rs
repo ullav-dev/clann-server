@@ -251,9 +251,10 @@ fn build_tree_node(
     include_root_extras: bool,
 ) -> Pin<Box<dyn Future<Output = Result<FamilyTreeNode, AppError>> + Send>> {
     Box::pin(async move {
-        let (children, spouse) = if include_root_extras {
+        let (children, spouse, siblings) = if include_root_extras {
             let child_persons = fetch_children(&db, &person.id).await?;
             let spouse_persons = fetch_spouses(&db, &person.id).await?;
+            let sibling_persons = fetch_siblings(&db, &person.id).await?;
 
             let mut child_nodes = Vec::new();
             for p in child_persons {
@@ -263,9 +264,13 @@ fn build_tree_node(
             for s in spouse_persons {
                 spouse_nodes.push(build_tree_node(db.clone(), s.person, 0, false).await?);
             }
-            (child_nodes, spouse_nodes)
+            let mut sibling_nodes = Vec::new();
+            for p in sibling_persons {
+                sibling_nodes.push(build_tree_node(db.clone(), p, 0, false).await?);
+            }
+            (child_nodes, spouse_nodes, sibling_nodes)
         } else {
-            (vec![], vec![])
+            (vec![], vec![], vec![])
         };
 
         if depth == 0 {
@@ -278,6 +283,7 @@ fn build_tree_node(
                 mother: vec![],
                 children,
                 spouse,
+                siblings,
             });
         }
 
@@ -303,8 +309,25 @@ fn build_tree_node(
             mother,
             children,
             spouse,
+            siblings,
         })
     })
+}
+
+async fn fetch_siblings(db: &Db, person_id: &RecordId) -> Result<Vec<Person>, AppError> {
+    let mut res = db
+        .query(
+            "SELECT ->has_sibling->person.* AS out_siblings, \
+                    <-has_sibling<-person.* AS in_siblings FROM $id",
+        )
+        .bind(("id", person_id.clone()))
+        .await?;
+    let siblings: Vec<Person> = res
+        .take::<Vec<SiblingsRow>>(0)?
+        .into_iter()
+        .flat_map(|r| r.out_siblings.into_iter().chain(r.in_siblings))
+        .collect();
+    Ok(siblings)
 }
 
 async fn fetch_relatives(db: &Db, from: &RecordId, rel: &str) -> Result<Vec<Person>, AppError> {

@@ -108,4 +108,7 @@ pub struct FamilyTreeNode {
     /// Spouses. Only populated for the root node.
     #[serde(default)]
     pub spouse: Vec<FamilyTreeNode>,
+    /// Siblings. Only populated for the root node.
+    #[serde(default)]
+    pub siblings: Vec<FamilyTreeNode>,
 }
