@@ -77,14 +77,22 @@ curl -X POST http://localhost:3000/api/persons/{id}/image \
 
 ### Relationships
 
-| Method   | Path                                                    | Description                        |
-|----------|---------------------------------------------------------|------------------------------------|
-| `POST`   | `/api/persons/{id}/relationships`                       | Add a relationship                 |
-| `GET`    | `/api/persons/{id}/relationships`                       | Get grouped relationships          |
-| `DELETE` | `/api/persons/{id}/relationships/{rel_type}/{related_id}` | Remove a relationship            |
-| `GET`    | `/api/persons/{id}/family-tree`                         | Family tree (2 generations + children) |
+| Method    | Path                                                      | Description                            |
+|-----------|-----------------------------------------------------------|----------------------------------------|
+| `POST`    | `/api/persons/{id}/relationships`                         | Add a relationship                     |
+| `GET`     | `/api/persons/{id}/relationships`                         | Get grouped relationships              |
+| `DELETE`  | `/api/persons/{id}/relationships/{rel_type}/{related_id}` | Remove a relationship                  |
+| `PATCH`   | `/api/persons/{id}/spouse-dates/{related_id}`             | Update spouse date fields              |
+| `GET`     | `/api/persons/{id}/family-tree`                           | Family tree (2 generations up + children + spouses) |
 
-Supported relationship types: `Father`, `Mother`, `Sibling` (with `sibling_type`: `Brother` or `Sister`).
+Supported relationship types:
+
+| `type`    | Extra fields                                         |
+|-----------|------------------------------------------------------|
+| `Father`  | —                                                    |
+| `Mother`  | —                                                    |
+| `Sibling` | `sibling_type`: `"Brother"` or `"Sister"` (required) |
+| `Spouse`  | `spouse_from`, `spouse_to` (optional date strings)   |
 
 ```bash
 # Add a father
@@ -92,10 +100,15 @@ curl -X POST http://localhost:3000/api/persons/{id}/relationships \
   -H 'Content-Type: application/json' \
   -d '{"type": "Father", "related_id": "person:{father_id}"}'
 
-# Add a sibling
+# Add a spouse with dates
 curl -X POST http://localhost:3000/api/persons/{id}/relationships \
   -H 'Content-Type: application/json' \
-  -d '{"type": "Sibling", "sibling_type": "Brother", "related_id": "person:{sibling_id}"}'
+  -d '{"type": "Spouse", "related_id": "person:{spouse_id}", "spouse_from": "1995-06-10"}'
+
+# Update spouse dates
+curl -X PATCH http://localhost:3000/api/persons/{id}/spouse-dates/person:{spouse_id} \
+  -H 'Content-Type: application/json' \
+  -d '{"spouse_from": "1995-06-10", "spouse_to": "2010-03-01"}'
 ```
 
 ## Development

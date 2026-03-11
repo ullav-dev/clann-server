@@ -56,6 +56,26 @@ pub struct AddRelationshipRequest {
     pub related_id: String,
     /// Required when `type` is `Sibling`.
     pub sibling_type: Option<SiblingType>,
+    /// Optional marriage/partnership start date (ISO 8601 or free-form string).
+    pub spouse_from: Option<String>,
+    /// Optional marriage/partnership end date.
+    pub spouse_to: Option<String>,
+}
+
+/// A spouse with the edge's date attributes included.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SpouseInfo {
+    #[serde(flatten)]
+    pub person: Person,
+    pub spouse_from: Option<String>,
+    pub spouse_to: Option<String>,
+}
+
+/// Payload for updating spouse date attributes on an existing relationship.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateSpouseDatesRequest {
+    pub spouse_from: Option<String>,
+    pub spouse_to: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -63,7 +83,7 @@ pub struct RelationshipsResponse {
     pub father: Vec<Person>,
     pub mother: Vec<Person>,
     pub siblings: Vec<Person>,
-    pub spouse: Vec<Person>,
+    pub spouse: Vec<SpouseInfo>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

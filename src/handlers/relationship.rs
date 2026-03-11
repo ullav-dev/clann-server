@@ -13,7 +13,10 @@ use crate::{
     error::{AppError, ErrorResponse},
     models::{
         person::Person,
-        relationship::{AddRelationshipRequest, FamilyTreeNode, RelationshipType, RelationshipsResponse, SiblingType},
+        relationship::{
+            AddRelationshipRequest, FamilyTreeNode, RelationshipType, RelationshipsResponse,
+            SiblingType, SpouseInfo, UpdateSpouseDatesRequest,
+        },
     },
 };
 
@@ -95,13 +98,19 @@ pub async fn add_relationship(
         }
         RelationshipType::Spouse => {
             // Add both directions so either person can find the other via a forward query.
-            db.query("RELATE $from->has_spouse->$to")
+            let sp_from = payload.spouse_from.as_deref().unwrap_or_default().to_string();
+            let sp_to = payload.spouse_to.as_deref().unwrap_or_default().to_string();
+            db.query("RELATE $from->has_spouse->$to CONTENT { spouse_from: $sf, spouse_to: $st }")
                 .bind(("from", from.clone()))
                 .bind(("to", to.clone()))
+                .bind(("sf", sp_from.clone()))
+                .bind(("st", sp_to.clone()))
                 .await?;
-            db.query("RELATE $to->has_spouse->$from")
+            db.query("RELATE $to->has_spouse->$from CONTENT { spouse_from: $sf, spouse_to: $st }")
                 .bind(("from", from))
                 .bind(("to", to))
+                .bind(("sf", sp_from))
+                .bind(("st", sp_to))
                 .await?;
         }
     }
@@ -251,8 +260,8 @@ fn build_tree_node(
                 child_nodes.push(build_tree_node(db.clone(), p, 0, false).await?);
             }
             let mut spouse_nodes = Vec::new();
-            for p in spouse_persons {
-                spouse_nodes.push(build_tree_node(db.clone(), p, 0, false).await?);
+            for s in spouse_persons {
+                spouse_nodes.push(build_tree_node(db.clone(), s.person, 0, false).await?);
             }
             (child_nodes, spouse_nodes)
         } else {
@@ -335,13 +344,62 @@ async fn fetch_children(db: &Db, parent_id: &RecordId) -> Result<Vec<Person>, Ap
     Ok(all)
 }
 
-/// Fetch spouses. Because `has_spouse` edges are added bidirectionally,
-/// a simple forward query is sufficient.
-async fn fetch_spouses(db: &Db, person_id: &RecordId) -> Result<Vec<Person>, AppError> {
-    let mut res = db
-        .query("SELECT ->has_spouse->person.* AS persons FROM $id")
-        .bind(("id", person_id.clone()))
-        .await?;
-    let rows: Vec<PersonsRow> = res.take(0)?;
-    Ok(rows.into_iter().flat_map(|r| r.persons).collect())
+/// Fetch spouses with edge date attributes.
+/// Because `has_spouse` edges are added bidirectionally, a forward query is sufficient.
+async fn fetch_spouses(db: &Db, person_id: &RecordId) -> Result<Vec<SpouseInfo>, AppError> {
+    #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
+    struct SpouseEdgeRow {
+        person: Person,
+        spouse_from: Option<String>,
+        spouse_to: Option<String>,
+    }
+
+    // Build a sub-object for the person to avoid field name collisions with the edge's own `id`.
+    let query = "SELECT \
+        { id: out.id, family_name: out.family_name, first_name: out.first_name, \
+          middle_name: out.middle_name, sex: out.sex, date_of_birth: out.date_of_birth, \
+          place_of_birth: out.place_of_birth, date_of_death: out.date_of_death, \
+          place_of_death: out.place_of_death, image_path: out.image_path } AS person, \
+        spouse_from, spouse_to \
+        FROM has_spouse WHERE in = $id";
+
+    let mut res = db.query(query).bind(("id", person_id.clone())).await?;
+    let rows: Vec<SpouseEdgeRow> = res.take(0)?;
+    Ok(rows
+        .into_iter()
+        .map(|r| SpouseInfo { person: r.person, spouse_from: r.spouse_from, spouse_to: r.spouse_to })
+        .collect())
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/persons/{id}/spouse-dates/{related_id}",
+    params(
+        ("id" = String, Path, description = "Person record ID (without the `person:` prefix)"),
+        ("related_id" = String, Path, description = "Full related record ID, e.g. `person:01jd4a8xyz`"),
+    ),
+    request_body = UpdateSpouseDatesRequest,
+    responses(
+        (status = 204, description = "Spouse dates updated"),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+    ),
+    tag = "relationships"
+)]
+pub async fn update_spouse_dates(
+    State(db): State<Db>,
+    Path((id, related_id)): Path<(String, String)>,
+    Json(payload): Json<UpdateSpouseDatesRequest>,
+) -> Result<StatusCode, AppError> {
+    let from = RecordId::new("person", id.as_str());
+    let to = parse_record_id(&related_id)?;
+    db.query(
+        "UPDATE has_spouse SET spouse_from = $sf, spouse_to = $st \
+         WHERE (in = $from AND out = $to) OR (in = $to AND out = $from)",
+    )
+    .bind(("from", from))
+    .bind(("to", to))
+    .bind(("sf", payload.spouse_from))
+    .bind(("st", payload.spouse_to))
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }

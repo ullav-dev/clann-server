@@ -32,7 +32,7 @@ src/db.rs                      connect() runs schema migration; pub type Db = Su
 src/error.rs                   AppError → JSON { "error": "..." }
 src/lib.rs                     pub mod declarations for integration tests
 src/models/person.rs           Person, CreatePerson, UpdatePerson, Sex
-src/models/relationship.rs     RelationshipType, FamilyTreeNode, etc.
+src/models/relationship.rs     RelationshipType, FamilyTreeNode, SpouseInfo, etc.
 src/handlers/person.rs         CRUD handlers
 src/handlers/relationship.rs   relationship + family tree handlers
 src/handlers/image.rs          image upload/retrieval handlers
@@ -64,3 +64,14 @@ tests/api.rs                   integration tests (23 tests)
 ## Testing
 
 Integration tests use `any::connect("mem://")` with a unique namespace/database per test (via `AtomicU64` counter) for isolation. Each test calls `setup()` which connects, runs the schema migration, and returns a `Router`.
+
+## Relationship types
+
+| JSON `type` | Edge table   | Extra fields                                      |
+|-------------|--------------|---------------------------------------------------|
+| `Father`    | `has_father` | —                                                 |
+| `Mother`    | `has_mother` | —                                                 |
+| `Sibling`   | `has_sibling`| `sibling_type`: `"Brother"` or `"Sister"`         |
+| `Spouse`    | `has_spouse` | `spouse_from`, `spouse_to` (optional date strings)|
+
+Spouse edges are stored bidirectionally (A→B and B→A). `GET .../relationships` returns `spouse: Vec<SpouseInfo>` which includes `spouse_from` and `spouse_to` from the edge. `PATCH .../spouse-dates/{related_id}` updates those fields on both directions simultaneously.

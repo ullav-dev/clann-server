@@ -28,12 +28,15 @@ use crate::{
         crate::handlers::relationship::get_relationships,
         crate::handlers::relationship::delete_relationship,
         crate::handlers::relationship::get_family_tree,
+        crate::handlers::relationship::update_spouse_dates,
     ),
     components(
         schemas(
             Person, CreatePerson, UpdatePerson, Sex,
             AddRelationshipRequest, RelationshipsResponse,
             SiblingType, RelationshipType,
+            crate::models::relationship::SpouseInfo,
+            crate::models::relationship::UpdateSpouseDatesRequest,
             ErrorResponse,
         )
     ),
