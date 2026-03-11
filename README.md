@@ -16,11 +16,27 @@ A REST API server for managing ancestry and family tree data, written in Rust.
 # Install
 curl -sSf https://install.surrealdb.com | sh
 
-# Run (in-memory)
+# Run (in-memory, data lost on restart)
 surreal start --user root --pass secret memory
 
-# Or with file-backed storage
-surreal start --user root --pass secret file:./data.db
+# Run with file-backed persistence (recommended)
+surreal start --user root --pass secret surrealkv:${DB_PATH:-/opt/ullav/clann/data.db}
+```
+
+> **Note:** SurrealDB v3 uses the `surrealkv:` prefix for file storage, not `file:`.
+
+Connect to an existing instance with the SQL REPL:
+
+```bash
+surreal sql \
+  --endpoint ws://localhost:8000 \
+  --username root --password secret \
+  --namespace clann --database ancestry
+
+-- useful commands inside the REPL:
+INFO FOR DB;           -- list all tables, users, analyzers
+INFO FOR TABLE person; -- list fields, indexes, events on a table
+SELECT * FROM person;
 ```
 
 ### 2. Run the server
@@ -39,15 +55,16 @@ Open **http://localhost:3000/swagger-ui** for the interactive Swagger UI.
 
 All configuration is via environment variables:
 
-| Variable       | Default               | Description                      |
-|----------------|-----------------------|----------------------------------|
-| `DB_URL`       | `ws://localhost:8000` | SurrealDB WebSocket URL          |
-| `DB_NAMESPACE` | `clann`               | SurrealDB namespace              |
-| `DB_DATABASE`  | `ancestry`            | SurrealDB database               |
-| `DB_USERNAME`  | `root`                | SurrealDB username               |
-| `DB_PASSWORD`  | `secret`              | SurrealDB password               |
-| `PORT`         | `3000`                | HTTP listen port                 |
-| `UPLOAD_DIR`   | `./uploads`           | Directory for person image files |
+| Variable       | Default                    | Description                                        |
+|----------------|----------------------------|----------------------------------------------------|
+| `DB_URL`       | `ws://localhost:8000`      | SurrealDB WebSocket URL                            |
+| `DB_NAMESPACE` | `clann`                    | SurrealDB namespace                                |
+| `DB_DATABASE`  | `ancestry`                 | SurrealDB database                                 |
+| `DB_USERNAME`  | `root`                     | SurrealDB username                                 |
+| `DB_PASSWORD`  | `secret`                   | SurrealDB password                                 |
+| `PORT`         | `3000`                     | HTTP listen port                                   |
+| `UPLOAD_DIR`   | `./uploads`                | Directory for person image files                   |
+| `DB_PATH`      | `/opt/ullav/clann/data.db` | SurrealDB data file path for persistent storage    |
 
 ## API
 
@@ -76,6 +93,8 @@ All configuration is via environment variables:
 | `nickname`       | no       |                                          |
 | `username`       | no       |                                          |
 | `email`          | no       |                                          |
+| `verified`       | no       | Boolean, defaults to `false`             |
+| `biography`      | no       | Free text, max 1000 characters           |
 
 `PUT` uses MERGE semantics — only supplied fields are updated. Omitted or `null` fields leave the existing value unchanged.
 

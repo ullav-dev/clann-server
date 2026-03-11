@@ -31,7 +31,7 @@ src/config.rs                  Config::from_env()
 src/db.rs                      connect() runs schema migration; pub type Db = Surreal<Any>
 src/error.rs                   AppError → JSON { "error": "..." }
 src/lib.rs                     pub mod declarations for integration tests
-src/models/person.rs           Person, CreatePerson, UpdatePerson, Sex — includes nickname, username, email
+src/models/person.rs           Person, CreatePerson, UpdatePerson, Sex — includes nickname, username, email, verified, biography
 src/models/relationship.rs     RelationshipType, FamilyTreeNode, SpouseInfo, etc.
 src/handlers/person.rs         CRUD handlers
 src/handlers/relationship.rs   relationship + family tree handlers
@@ -53,6 +53,7 @@ tests/api.rs                   integration tests (33 tests)
 | `DB_PASSWORD`  | `secret`                 | SurrealDB password                 |
 | `PORT`         | `3000`                   | HTTP listen port                   |
 | `UPLOAD_DIR`   | `./uploads`              | Directory for person image files   |
+| `DB_PATH`      | `/opt/ullav/clann/data.db` | SurrealDB data file path (used when starting SurrealDB with `surrealkv:$DB_PATH`) |
 
 ## SurrealDB notes
 
@@ -60,6 +61,9 @@ tests/api.rs                   integration tests (33 tests)
 - `RecordId` is `surrealdb::types::RecordId`; construct with `RecordId::new("table", "id")`.
 - Types passed to/from the DB need `#[derive(SurrealValue)]` or a manual `SurrealValue` impl.
 - `Root` auth takes owned `String` fields in v3: `Root { username: "x".to_string(), password: "y".to_string() }`.
+- File-backed storage uses the `surrealkv:` prefix (not `file:`): `surreal start surrealkv:/path/to/data.db`.
+- The `fetch_spouses` query in `relationship.rs` builds an explicit person sub-object to avoid field name collisions with the edge's own `id` — any new person fields must be added to that query too.
+- Inspect the live schema with `INFO FOR DB;` or `INFO FOR TABLE person;` in the SurrealQL REPL.
 
 ## Testing
 
