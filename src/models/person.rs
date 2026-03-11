@@ -63,6 +63,9 @@ pub struct Person {
     pub date_of_death: Option<String>,
     pub place_of_death: Option<String>,
     pub image_path: Option<String>,
+    pub nickname: Option<String>,
+    pub username: Option<String>,
+    pub email: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, SurrealValue)]
@@ -80,6 +83,12 @@ pub struct CreatePerson {
     pub date_of_death: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub place_of_death: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
 }
 
 /// All fields are optional; only supplied fields are updated (MERGE semantics).
@@ -101,4 +110,10 @@ pub struct UpdatePerson {
     pub date_of_death: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub place_of_death: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
 }
