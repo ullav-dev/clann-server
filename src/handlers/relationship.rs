@@ -1,7 +1,7 @@
 use std::{future::Future, pin::Pin};
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
@@ -11,6 +11,7 @@ use surrealdb::types::{RecordId, RecordIdKey, SurrealValue};
 use crate::{
     db::Db,
     error::{AppError, ErrorResponse},
+    handlers::person::{PersonFilter, check_ownership},
     models::{
         person::Person,
         relationship::{
@@ -64,8 +65,13 @@ struct SiblingsRow {
 pub async fn add_relationship(
     State(db): State<Db>,
     Path(id): Path<String>,
+    Query(filter): Query<PersonFilter>,
     Json(payload): Json<AddRelationshipRequest>,
 ) -> Result<StatusCode, AppError> {
+    if filter.created_by.is_some() {
+        let person: Option<Person> = db.select(("person", id.as_str())).await?;
+        check_ownership(&person.ok_or(AppError::NotFound)?, &filter.created_by)?;
+    }
     let from = RecordId::new("person", id.as_str());
     let to = parse_record_id(&payload.related_id)?;
 
@@ -133,7 +139,12 @@ pub async fn add_relationship(
 pub async fn get_relationships(
     State(db): State<Db>,
     Path(id): Path<String>,
+    Query(filter): Query<PersonFilter>,
 ) -> Result<Json<RelationshipsResponse>, AppError> {
+    if filter.created_by.is_some() {
+        let person: Option<Person> = db.select(("person", id.as_str())).await?;
+        check_ownership(&person.ok_or(AppError::NotFound)?, &filter.created_by)?;
+    }
     let person_id = RecordId::new("person", id.as_str());
 
     let mut father_res = db
@@ -192,7 +203,12 @@ pub async fn get_relationships(
 pub async fn delete_relationship(
     State(db): State<Db>,
     Path((id, rel_type, related_id)): Path<(String, String, String)>,
+    Query(filter): Query<PersonFilter>,
 ) -> Result<StatusCode, AppError> {
+    if filter.created_by.is_some() {
+        let person: Option<Person> = db.select(("person", id.as_str())).await?;
+        check_ownership(&person.ok_or(AppError::NotFound)?, &filter.created_by)?;
+    }
     // Validate rel_type against the whitelist before embedding it in the query string.
     let valid = RelationshipType::from_str(&rel_type)
         .ok_or_else(|| AppError::InvalidRelType(format!("Unknown relationship type: {}", rel_type)))?;
@@ -234,9 +250,11 @@ pub async fn delete_relationship(
 pub async fn get_family_tree(
     State(db): State<Db>,
     Path(id): Path<String>,
+    Query(filter): Query<PersonFilter>,
 ) -> Result<Json<FamilyTreeNode>, AppError> {
     let person: Option<Person> = db.select(("person", id.as_str())).await?;
     let person = person.ok_or(AppError::NotFound)?;
+    check_ownership(&person, &filter.created_by)?;
 
     let node = build_tree_node(db, person, 2, true).await?;
     Ok(Json(node))
@@ -414,8 +432,13 @@ async fn fetch_spouses(db: &Db, person_id: &RecordId) -> Result<Vec<SpouseInfo>,
 pub async fn update_spouse_dates(
     State(db): State<Db>,
     Path((id, related_id)): Path<(String, String)>,
+    Query(filter): Query<PersonFilter>,
     Json(payload): Json<UpdateSpouseDatesRequest>,
 ) -> Result<StatusCode, AppError> {
+    if filter.created_by.is_some() {
+        let person: Option<Person> = db.select(("person", id.as_str())).await?;
+        check_ownership(&person.ok_or(AppError::NotFound)?, &filter.created_by)?;
+    }
     let from = RecordId::new("person", id.as_str());
     let to = parse_record_id(&related_id)?;
     db.query(

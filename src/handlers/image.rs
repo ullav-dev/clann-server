@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::{Multipart, Path, State},
+    extract::{Multipart, Path, Query, State},
     http::{header, Response, StatusCode},
     response::IntoResponse,
     Extension,
@@ -11,6 +11,7 @@ use tokio::fs;
 use crate::{
     db::Db,
     error::AppError,
+    handlers::person::{PersonFilter, check_ownership},
     models::person::Person,
 };
 
@@ -38,11 +39,13 @@ pub async fn upload_image(
     State(db): State<Db>,
     Extension(upload_dir): Extension<String>,
     Path(id): Path<String>,
+    Query(filter): Query<PersonFilter>,
     mut multipart: Multipart,
 ) -> Result<StatusCode, AppError> {
-    // Verify person exists.
+    // Verify person exists and caller has access.
     let person: Option<Person> = db.select(("person", id.as_str())).await?;
-    person.ok_or(AppError::NotFound)?;
+    let person = person.ok_or(AppError::NotFound)?;
+    check_ownership(&person, &filter.created_by)?;
 
     // Read the multipart field named "image".
     while let Some(field) = multipart.next_field().await.map_err(|e| AppError::BadRequest(e.to_string()))? {

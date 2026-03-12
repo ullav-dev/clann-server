@@ -13,8 +13,26 @@ use crate::{
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct PersonFilter {
-    /// Filter persons by the `created_by` field.
+    /// When present, only return/allow access to persons with this `created_by` value.
     pub created_by: Option<String>,
+}
+
+/// Returns true if `username` matches the configured admin username
+/// (`ADMIN_USERNAME` env var, defaulting to `"theboss"`).
+fn is_admin(username: &str) -> bool {
+    let admin = std::env::var("ADMIN_USERNAME").unwrap_or_else(|_| "theboss".to_string());
+    username == admin
+}
+
+/// Returns `AppError::NotFound` if `created_by` is set, is not the admin
+/// username, and does not match the person's `created_by` field.
+pub fn check_ownership(person: &Person, created_by: &Option<String>) -> Result<(), AppError> {
+    if let Some(ref creator) = created_by {
+        if !is_admin(creator) && person.created_by.as_deref() != Some(creator.as_str()) {
+            return Err(AppError::NotFound);
+        }
+    }
+    Ok(())
 }
 
 #[utoipa::path(
@@ -53,14 +71,14 @@ pub async fn list_persons(
     Query(filter): Query<PersonFilter>,
 ) -> Result<Json<Vec<Person>>, AppError> {
     let persons: Vec<Person> = match filter.created_by {
-        Some(ref creator) => {
+        Some(ref creator) if !is_admin(creator) => {
             let mut res = db
                 .query("SELECT * FROM person WHERE created_by = $v")
                 .bind(("v", creator.clone()))
                 .await?;
             res.take(0)?
         }
-        None => db.select("person").await?,
+        _ => db.select("person").await?,
     };
     Ok(Json(persons))
 }
@@ -80,9 +98,11 @@ pub async fn list_persons(
 pub async fn get_person(
     State(db): State<Db>,
     Path(id): Path<String>,
+    Query(filter): Query<PersonFilter>,
 ) -> Result<Json<Person>, AppError> {
     let person: Option<Person> = db.select(("person", id.as_str())).await?;
     let person = person.ok_or(AppError::NotFound)?;
+    check_ownership(&person, &filter.created_by)?;
     Ok(Json(person))
 }
 
@@ -102,8 +122,13 @@ pub async fn get_person(
 pub async fn update_person(
     State(db): State<Db>,
     Path(id): Path<String>,
+    Query(filter): Query<PersonFilter>,
     Json(payload): Json<UpdatePerson>,
 ) -> Result<Json<Person>, AppError> {
+    if filter.created_by.is_some() {
+        let check: Option<Person> = db.select(("person", id.as_str())).await?;
+        check_ownership(&check.ok_or(AppError::NotFound)?, &filter.created_by)?;
+    }
     let body = serde_json::to_value(&payload)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
     let person: Option<Person> = db.update(("person", id.as_str())).merge(body).await?;
@@ -125,7 +150,12 @@ pub async fn update_person(
 pub async fn delete_person(
     State(db): State<Db>,
     Path(id): Path<String>,
+    Query(filter): Query<PersonFilter>,
 ) -> Result<StatusCode, AppError> {
+    if filter.created_by.is_some() {
+        let check: Option<Person> = db.select(("person", id.as_str())).await?;
+        check_ownership(&check.ok_or(AppError::NotFound)?, &filter.created_by)?;
+    }
     let _: Option<Person> = db.delete(("person", id.as_str())).await?;
     Ok(StatusCode::NO_CONTENT)
 }
