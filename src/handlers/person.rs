@@ -1,14 +1,21 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
+use serde::Deserialize;
 
 use crate::{
     db::Db,
     error::{AppError, ErrorResponse},
     models::person::{CreatePerson, Person, UpdatePerson},
 };
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct PersonFilter {
+    /// Filter persons by the `created_by` field.
+    pub created_by: Option<String>,
+}
 
 #[utoipa::path(
     post,
@@ -35,13 +42,26 @@ pub async fn create_person(
 #[utoipa::path(
     get,
     path = "/api/persons",
+    params(PersonFilter),
     responses(
-        (status = 200, description = "List of all persons", body = Vec<Person>),
+        (status = 200, description = "List of persons, optionally filtered", body = Vec<Person>),
     ),
     tag = "persons"
 )]
-pub async fn list_persons(State(db): State<Db>) -> Result<Json<Vec<Person>>, AppError> {
-    let persons: Vec<Person> = db.select("person").await?;
+pub async fn list_persons(
+    State(db): State<Db>,
+    Query(filter): Query<PersonFilter>,
+) -> Result<Json<Vec<Person>>, AppError> {
+    let persons: Vec<Person> = match filter.created_by {
+        Some(ref creator) => {
+            let mut res = db
+                .query("SELECT * FROM person WHERE created_by = $v")
+                .bind(("v", creator.clone()))
+                .await?;
+            res.take(0)?
+        }
+        None => db.select("person").await?,
+    };
     Ok(Json(persons))
 }
 

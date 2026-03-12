@@ -593,6 +593,74 @@ async fn test_family_tree_returns_nested_ancestors() {
     assert_eq!(body["father"][0]["father"][0]["first_name"], "Grandpa");
 }
 
+// ── created_by field and list filter ─────────────────────────────────────────
+
+#[tokio::test]
+async fn test_create_person_with_created_by() {
+    let app = setup().await;
+    let (status, body) = create_person_req(
+        app,
+        json!({"family_name": "Nolan", "first_name": "Brian", "sex": "Male", "created_by": "admin"}),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["created_by"], "admin");
+}
+
+#[tokio::test]
+async fn test_list_persons_filter_by_created_by() {
+    let app = setup().await;
+
+    // Create two persons by "alice" and one by "bob"
+    for name in ["Anna", "Amy"] {
+        create_person_req(
+            app.clone(),
+            json!({"family_name": "Test", "first_name": name, "sex": "Female", "created_by": "alice"}),
+        )
+        .await;
+    }
+    create_person_req(
+        app.clone(),
+        json!({"family_name": "Test", "first_name": "Bob", "sex": "Male", "created_by": "bob"}),
+    )
+    .await;
+
+    let response = app
+        .clone()
+        .oneshot(get("/api/persons?created_by=alice"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let persons = body.as_array().unwrap();
+    assert_eq!(persons.len(), 2);
+    assert!(persons.iter().all(|p| p["created_by"] == "alice"));
+
+    // Unfiltered list returns all three
+    let response = app.oneshot(get("/api/persons")).await.unwrap();
+    let body = response_json(response).await;
+    assert_eq!(body.as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn test_list_persons_filter_no_matches_returns_empty() {
+    let app = setup().await;
+    create_person_req(
+        app.clone(),
+        json!({"family_name": "Test", "first_name": "Only", "sex": "Male", "created_by": "alice"}),
+    )
+    .await;
+
+    let response = app
+        .oneshot(get("/api/persons?created_by=nobody"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body.as_array().unwrap().len(), 0);
+}
+
 // ── Person profile fields (nickname / username / email) ──────────────────────
 
 #[tokio::test]

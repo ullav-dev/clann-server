@@ -71,6 +71,8 @@ pub struct Person {
     pub verified: bool,
     /// Short biography, up to 1000 characters.
     pub biography: Option<String>,
+    /// Identifier of the user who created this record.
+    pub created_by: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, SurrealValue)]
@@ -96,6 +98,8 @@ pub struct CreatePerson {
     pub email: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub biography: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
 }
 
 /// All fields are optional; only supplied fields are updated (MERGE semantics).
@@ -127,4 +131,6 @@ pub struct UpdatePerson {
     pub verified: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub biography: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
 }
