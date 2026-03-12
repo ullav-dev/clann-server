@@ -31,7 +31,7 @@ src/config.rs                  Config::from_env()
 src/db.rs                      connect() runs schema migration; pub type Db = Surreal<Any>
 src/error.rs                   AppError → JSON { "error": "..." }
 src/lib.rs                     pub mod declarations for integration tests
-src/models/person.rs           Person, CreatePerson, UpdatePerson, Sex — includes nickname, username, email, verified, biography
+src/models/person.rs           Person, CreatePerson, UpdatePerson, Sex — includes nickname, username, email, verified, biography, created_by
 src/models/relationship.rs     RelationshipType, FamilyTreeNode, SpouseInfo, etc.
 src/handlers/person.rs         CRUD handlers
 src/handlers/relationship.rs   relationship + family tree handlers
@@ -39,7 +39,7 @@ src/handlers/image.rs          image upload/retrieval handlers
 src/openapi.rs                 ApiDoc, swagger_ui(), openapi_json()
 src/routes/mod.rs              build_router(db, upload_dir)
 migrations/schema.surql        SurrealDB schema (run at startup via include_str!)
-tests/api.rs                   integration tests (33 tests)
+tests/api.rs                   integration tests (40 tests)
 ```
 
 ## Environment variables
@@ -62,7 +62,8 @@ tests/api.rs                   integration tests (33 tests)
 - Types passed to/from the DB need `#[derive(SurrealValue)]` or a manual `SurrealValue` impl.
 - `Root` auth takes owned `String` fields in v3: `Root { username: "x".to_string(), password: "y".to_string() }`.
 - File-backed storage uses the `surrealkv:` prefix (not `file:`): `surreal start surrealkv:/path/to/data.db`.
-- The `fetch_spouses` query in `relationship.rs` builds an explicit person sub-object to avoid field name collisions with the edge's own `id` — any new person fields must be added to that query too.
+- The `fetch_spouses` query in `relationship.rs` builds an explicit person sub-object to avoid field name collisions with the edge's own `id` — **any new person fields must also be added to that query**.
+- When adding new fields to the schema after the database already exists, restart the server (which re-runs the migration) then backfill existing records: `UPDATE person SET new_field = <value> WHERE new_field = NONE;`
 - Inspect the live schema with `INFO FOR DB;` or `INFO FOR TABLE person;` in the SurrealQL REPL.
 
 ## Testing

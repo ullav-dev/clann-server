@@ -95,8 +95,18 @@ All configuration is via environment variables:
 | `email`          | no       |                                          |
 | `verified`       | no       | Boolean, defaults to `false`             |
 | `biography`      | no       | Free text, max 1000 characters           |
+| `created_by`     | no       | Identifier of the creator                |
 
 `PUT` uses MERGE semantics — only supplied fields are updated. Omitted or `null` fields leave the existing value unchanged.
+
+**Filtering:** `GET /api/persons` accepts a `created_by` query parameter to filter results:
+
+```bash
+# All persons created by "colin"
+curl http://localhost:3000/api/persons?created_by=colin
+```
+
+The filter is case-sensitive and index-backed for efficient lookups.
 
 ### Images
 
