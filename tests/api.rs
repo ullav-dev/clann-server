@@ -661,6 +661,93 @@ async fn test_list_persons_filter_no_matches_returns_empty() {
     assert_eq!(body.as_array().unwrap().len(), 0);
 }
 
+#[tokio::test]
+async fn test_created_by_is_null_when_not_set() {
+    let app = setup().await;
+    let (_, body) = create_person_req(
+        app,
+        json!({"family_name": "Ghost", "first_name": "User", "sex": "Male"}),
+    )
+    .await;
+
+    assert!(body["created_by"].is_null());
+}
+
+#[tokio::test]
+async fn test_update_person_created_by() {
+    let app = setup().await;
+    let (_, created) = create_person_req(
+        app.clone(),
+        json!({"family_name": "Casey", "first_name": "Pat", "sex": "Male"}),
+    )
+    .await;
+    let id = record_id(&created);
+
+    let response = app
+        .clone()
+        .oneshot(put_json(
+            &format!("/api/persons/{}", id),
+            json!({"created_by": "editor"}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["created_by"], "editor");
+    assert_eq!(body["first_name"], "Pat"); // other fields unchanged
+}
+
+#[tokio::test]
+async fn test_list_filter_created_by_is_case_sensitive() {
+    let app = setup().await;
+    create_person_req(
+        app.clone(),
+        json!({"family_name": "Test", "first_name": "Lower", "sex": "Male", "created_by": "alice"}),
+    )
+    .await;
+
+    // "Alice" (capital A) should not match "alice"
+    let response = app
+        .oneshot(get("/api/persons?created_by=Alice"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body.as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn test_list_filter_created_by_only_returns_own_records() {
+    let app = setup().await;
+    create_person_req(
+        app.clone(),
+        json!({"family_name": "A", "first_name": "One", "sex": "Male", "created_by": "userA"}),
+    )
+    .await;
+    create_person_req(
+        app.clone(),
+        json!({"family_name": "B", "first_name": "Two", "sex": "Female", "created_by": "userB"}),
+    )
+    .await;
+    // No created_by set
+    create_person_req(
+        app.clone(),
+        json!({"family_name": "C", "first_name": "Three", "sex": "Male"}),
+    )
+    .await;
+
+    let response = app
+        .oneshot(get("/api/persons?created_by=userA"))
+        .await
+        .unwrap();
+    let body = response_json(response).await;
+    let persons = body.as_array().unwrap();
+    assert_eq!(persons.len(), 1);
+    assert_eq!(persons[0]["first_name"], "One");
+    assert_eq!(persons[0]["created_by"], "userA");
+}
+
 // ── Person profile fields (nickname / username / email) ──────────────────────
 
 #[tokio::test]
