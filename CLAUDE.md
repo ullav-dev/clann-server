@@ -32,7 +32,7 @@ src/db.rs                      connect() runs schema migration; pub type Db = Su
 src/error.rs                   AppError → JSON { "error": "..." }
 src/lib.rs                     pub mod declarations for integration tests
 src/models/person.rs           Person, CreatePerson, UpdatePerson, Sex — includes nickname, username, email, verified, biography, created_by
-src/models/relationship.rs     RelationshipType, FamilyTreeNode, SpouseInfo, etc.
+src/models/relationship.rs     RelationshipType, FamilyTreeNode (includes sex, date_of_birth, place_of_birth, biography), SpouseInfo, etc.
 src/handlers/person.rs         CRUD handlers
 src/handlers/relationship.rs   relationship + family tree handlers
 src/handlers/image.rs          image upload/retrieval handlers
