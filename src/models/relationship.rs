@@ -1,3 +1,4 @@
+use crate::models::person::Sex;
 use serde::{Deserialize, Serialize};
 use surrealdb::types::{RecordId, RecordIdKey};
 use utoipa::ToSchema;
@@ -94,6 +95,10 @@ pub struct FamilyTreeNode {
     pub id: RecordId,
     pub family_name: String,
     pub first_name: String,
+    pub sex: Option<Sex>,
+    pub date_of_birth: Option<String>,
+    pub place_of_birth: Option<String>,
+    pub biography: Option<String>,
     pub image_path: Option<String>,
     /// Father's node with their ancestors (2 generations deep).
     #[serde(default)]
