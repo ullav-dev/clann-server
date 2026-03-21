@@ -103,21 +103,18 @@ pub async fn add_relationship(
                 .await?;
         }
         RelationshipType::Spouse => {
-            // Add both directions so either person can find the other via a forward query.
+            // Add both directions in a single query to avoid concurrent SurrealDB WebSocket usage.
             let sp_from = payload.spouse_from.as_deref().unwrap_or_default().to_string();
             let sp_to = payload.spouse_to.as_deref().unwrap_or_default().to_string();
-            db.query("RELATE $from->has_spouse->$to CONTENT { spouse_from: $sf, spouse_to: $st }")
-                .bind(("from", from.clone()))
-                .bind(("to", to.clone()))
-                .bind(("sf", sp_from.clone()))
-                .bind(("st", sp_to.clone()))
-                .await?;
-            db.query("RELATE $to->has_spouse->$from CONTENT { spouse_from: $sf, spouse_to: $st }")
-                .bind(("from", from))
-                .bind(("to", to))
-                .bind(("sf", sp_from))
-                .bind(("st", sp_to))
-                .await?;
+            db.query(
+                "RELATE $from->has_spouse->$to CONTENT { spouse_from: $sf, spouse_to: $st }; \
+                 RELATE $to->has_spouse->$from CONTENT { spouse_from: $sf, spouse_to: $st };",
+            )
+            .bind(("from", from))
+            .bind(("to", to))
+            .bind(("sf", sp_from))
+            .bind(("st", sp_to))
+            .await?;
         }
     }
 
