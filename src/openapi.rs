@@ -4,6 +4,7 @@ use utoipa::OpenApi;
 use crate::{
     error::ErrorResponse,
     models::{
+        family_tree::{CreateFamilyTree, FamilyTree},
         person::{CreatePerson, Person, Sex, UpdatePerson},
         relationship::{AddRelationshipRequest, RelationshipType, RelationshipsResponse, SiblingType},
     },
@@ -17,6 +18,10 @@ use crate::{
         description = "REST API for ancestry and family tree data management, backed by SurrealDB."
     ),
     paths(
+        crate::handlers::family_tree::create_tree,
+        crate::handlers::family_tree::list_trees,
+        crate::handlers::family_tree::get_tree,
+        crate::handlers::family_tree::delete_tree,
         crate::handlers::person::create_person,
         crate::handlers::person::list_persons,
         crate::handlers::person::get_person,
@@ -32,6 +37,7 @@ use crate::{
     ),
     components(
         schemas(
+            FamilyTree, CreateFamilyTree,
             Person, CreatePerson, UpdatePerson, Sex,
             AddRelationshipRequest, RelationshipsResponse,
             SiblingType, RelationshipType,
@@ -41,6 +47,7 @@ use crate::{
         )
     ),
     tags(
+        (name = "trees",         description = "Create, read and delete family trees"),
         (name = "persons",       description = "Create, read, update and delete person records"),
         (name = "relationships", description = "Manage family relationships and traverse the family tree"),
     )

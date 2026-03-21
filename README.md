@@ -37,6 +37,7 @@ surreal sql \
 INFO FOR DB;           -- list all tables, users, analyzers
 INFO FOR TABLE person; -- list fields, indexes, events on a table
 SELECT * FROM person;
+SELECT * FROM family_tree;
 ```
 
 ### 2. Run the server
@@ -45,11 +46,13 @@ SELECT * FROM person;
 cargo run
 ```
 
-The server listens on `http://localhost:3000` by default.
+The server listens on `http://localhost:3000` by default. Schema migration runs automatically on startup.
 
 ### 3. Browse the API
 
 Open **http://localhost:3000/swagger-ui** for the interactive Swagger UI.
+
+The OpenAPI JSON spec is also committed at [`openapi.json`](./openapi.json).
 
 ## Configuration
 
@@ -68,7 +71,46 @@ All configuration is via environment variables:
 
 ## API
 
+### Family Trees
+
+A family tree groups persons under a named container. Each tree has a unique `name` (slug), a `display_name`, an `owner`, and an optional `is_primary` flag. One tree per owner can be marked as primary.
+
+| Method   | Path               | Description                                  |
+|----------|--------------------|----------------------------------------------|
+| `POST`   | `/api/trees`       | Create a family tree                         |
+| `GET`    | `/api/trees`       | List all trees (optional `?owner=` filter)   |
+| `GET`    | `/api/trees/{name}`| Get a tree by its unique name                |
+| `DELETE` | `/api/trees/{name}`| Delete a tree and all its persons            |
+
+**Tree fields:**
+
+| Field          | Required | Description                                                      |
+|----------------|----------|------------------------------------------------------------------|
+| `name`         | yes      | Unique slug identifier (e.g. `"smith-family"`)                   |
+| `display_name` | yes      | Human-readable label                                             |
+| `owner`        | yes      | Username of the owner                                            |
+| `is_primary`   | no       | `true` to mark as the owner's primary tree (defaults to `false`) |
+
+Setting `is_primary: true` automatically clears `is_primary` on all other trees for the same owner.
+
+Deleting a tree **cascade-deletes** all persons in that tree and their relationship edges.
+
+```bash
+# Create a tree
+curl -X POST http://localhost:3000/api/trees \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "murphy-family", "display_name": "The Murphy Family", "owner": "colin", "is_primary": true}'
+
+# List trees for an owner
+curl http://localhost:3000/api/trees?owner=colin
+
+# Delete a tree (and all its persons)
+curl -X DELETE http://localhost:3000/api/trees/murphy-family
+```
+
 ### Persons
+
+Persons must belong to a family tree. The `tree` field is required on creation and must refer to an existing tree name.
 
 | Method   | Path                  | Description          |
 |----------|-----------------------|----------------------|
@@ -85,6 +127,7 @@ All configuration is via environment variables:
 | `family_name`    | yes      |                                          |
 | `first_name`     | yes      |                                          |
 | `sex`            | yes      | `"Male"` or `"Female"`                   |
+| `tree`           | yes      | Name of the family tree this person belongs to |
 | `middle_name`    | no       |                                          |
 | `date_of_birth`  | no       | ISO 8601 or free-form string             |
 | `place_of_birth` | no       |                                          |
@@ -99,14 +142,13 @@ All configuration is via environment variables:
 
 `PUT` uses MERGE semantics — only supplied fields are updated. Omitted or `null` fields leave the existing value unchanged.
 
-**Filtering:** `GET /api/persons` accepts a `created_by` query parameter to filter results:
+**Filtering:** `GET /api/persons` accepts `created_by` and `tree` query parameters:
 
 ```bash
-# All persons created by "colin"
+curl http://localhost:3000/api/persons?tree=murphy-family
 curl http://localhost:3000/api/persons?created_by=colin
+curl "http://localhost:3000/api/persons?tree=murphy-family&created_by=colin"
 ```
-
-The filter is case-sensitive and index-backed for efficient lookups.
 
 ### Images
 
@@ -162,7 +204,7 @@ curl -X PATCH http://localhost:3000/api/persons/{id}/spouse-dates/person:{spouse
 
 ```bash
 cargo build       # Build
-cargo test        # Run integration tests
+cargo test        # Run integration tests (52 tests, no external DB required)
 cargo clippy      # Lint
 cargo fmt         # Format
 ```

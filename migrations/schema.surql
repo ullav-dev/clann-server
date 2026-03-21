@@ -1,3 +1,11 @@
+DEFINE TABLE IF NOT EXISTS family_tree SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS name         ON TABLE family_tree TYPE string;
+DEFINE FIELD IF NOT EXISTS display_name ON TABLE family_tree TYPE string;
+DEFINE FIELD IF NOT EXISTS owner        ON TABLE family_tree TYPE string;
+DEFINE FIELD IF NOT EXISTS is_primary   ON TABLE family_tree TYPE bool DEFAULT false;
+DEFINE INDEX IF NOT EXISTS idx_tree_name  ON TABLE family_tree COLUMNS name UNIQUE;
+DEFINE INDEX IF NOT EXISTS idx_tree_owner ON TABLE family_tree COLUMNS owner;
+
 DEFINE TABLE IF NOT EXISTS person SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS family_name   ON TABLE person TYPE string;
 DEFINE FIELD IF NOT EXISTS first_name    ON TABLE person TYPE string;
@@ -14,7 +22,9 @@ DEFINE FIELD IF NOT EXISTS email         ON TABLE person TYPE option<string>;
 DEFINE FIELD verified                    ON TABLE person TYPE bool DEFAULT false VALUE $value OR false;
 DEFINE FIELD IF NOT EXISTS biography     ON TABLE person TYPE option<string> ASSERT $value = NONE OR string::len($value) <= 1000;
 DEFINE FIELD IF NOT EXISTS created_by    ON TABLE person TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS tree          ON TABLE person TYPE option<string>;
 DEFINE INDEX IF NOT EXISTS idx_created_by ON TABLE person COLUMNS created_by;
+DEFINE INDEX IF NOT EXISTS idx_person_tree ON TABLE person COLUMNS tree;
 
 DEFINE TABLE IF NOT EXISTS has_father  TYPE RELATION IN person OUT person SCHEMAFULL;
 DEFINE TABLE IF NOT EXISTS has_mother  TYPE RELATION IN person OUT person SCHEMAFULL;

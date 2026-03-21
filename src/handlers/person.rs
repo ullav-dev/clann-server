@@ -8,13 +8,15 @@ use serde::Deserialize;
 use crate::{
     db::Db,
     error::{AppError, ErrorResponse},
-    models::person::{CreatePerson, Person, UpdatePerson},
+    models::{family_tree::FamilyTree, person::{CreatePerson, Person, UpdatePerson}},
 };
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct PersonFilter {
     /// When present, only return/allow access to persons with this `created_by` value.
     pub created_by: Option<String>,
+    /// When present, only return persons belonging to this family tree.
+    pub tree: Option<String>,
 }
 
 /// Returns true if `username` matches the configured admin username
@@ -50,6 +52,19 @@ pub async fn create_person(
     State(db): State<Db>,
     Json(payload): Json<CreatePerson>,
 ) -> Result<(StatusCode, Json<Person>), AppError> {
+    // Validate the specified tree exists
+    let tree_exists: Option<FamilyTree> = db
+        .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
+        .bind(("name", payload.tree.clone()))
+        .await?
+        .take(0)?;
+    if tree_exists.is_none() {
+        return Err(AppError::BadRequest(format!(
+            "Family tree '{}' not found",
+            payload.tree
+        )));
+    }
+
     let body = serde_json::to_value(&payload)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
     let person: Option<Person> = db.create("person").content(body).await?;
@@ -70,15 +85,26 @@ pub async fn list_persons(
     State(db): State<Db>,
     Query(filter): Query<PersonFilter>,
 ) -> Result<Json<Vec<Person>>, AppError> {
-    let persons: Vec<Person> = match filter.created_by {
-        Some(ref creator) if !is_admin(creator) => {
-            let mut res = db
-                .query("SELECT * FROM person WHERE created_by = $v")
-                .bind(("v", creator.clone()))
-                .await?;
-            res.take(0)?
-        }
-        _ => db.select("person").await?,
+    let creator_filter = filter.created_by.as_deref().filter(|c| !is_admin(c));
+
+    let persons: Vec<Person> = match (creator_filter, filter.tree.as_deref()) {
+        (Some(creator), Some(tree)) => db
+            .query("SELECT * FROM person WHERE created_by = $creator AND tree = $tree")
+            .bind(("creator", creator.to_string()))
+            .bind(("tree", tree.to_string()))
+            .await?
+            .take(0)?,
+        (Some(creator), None) => db
+            .query("SELECT * FROM person WHERE created_by = $creator")
+            .bind(("creator", creator.to_string()))
+            .await?
+            .take(0)?,
+        (None, Some(tree)) => db
+            .query("SELECT * FROM person WHERE tree = $tree")
+            .bind(("tree", tree.to_string()))
+            .await?
+            .take(0)?,
+        (None, None) => db.select("person").await?,
     };
     Ok(Json(persons))
 }

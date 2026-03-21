@@ -31,15 +31,18 @@ src/config.rs                  Config::from_env()
 src/db.rs                      connect() runs schema migration; pub type Db = Surreal<Any>
 src/error.rs                   AppError → JSON { "error": "..." }
 src/lib.rs                     pub mod declarations for integration tests
-src/models/person.rs           Person, CreatePerson, UpdatePerson, Sex — includes nickname, username, email, verified, biography, created_by
+src/models/family_tree.rs      FamilyTree, CreateFamilyTree
+src/models/person.rs           Person, CreatePerson, UpdatePerson, Sex — includes tree, nickname, username, email, verified, biography, created_by
 src/models/relationship.rs     RelationshipType, FamilyTreeNode (includes sex, date_of_birth, place_of_birth, biography), SpouseInfo, etc.
-src/handlers/person.rs         CRUD handlers
+src/handlers/family_tree.rs    CRUD handlers for family trees
+src/handlers/person.rs         CRUD handlers (validates tree exists on create)
 src/handlers/relationship.rs   relationship + family tree handlers
 src/handlers/image.rs          image upload/retrieval handlers
 src/openapi.rs                 ApiDoc, swagger_ui(), openapi_json()
 src/routes/mod.rs              build_router(db, upload_dir)
 migrations/schema.surql        SurrealDB schema (run at startup via include_str!)
-tests/api.rs                   integration tests (40 tests)
+openapi.json                   committed OpenAPI spec (regenerate with: curl localhost:3000/api-docs/openapi.json)
+tests/api.rs                   integration tests (52 tests)
 ```
 
 ## Environment variables
@@ -69,6 +72,15 @@ tests/api.rs                   integration tests (40 tests)
 ## Testing
 
 Integration tests use `any::connect("mem://")` with a unique namespace/database per test (via `AtomicU64` counter) for isolation. Each test calls `setup()` which connects, runs the schema migration, and returns a `Router`. No external database or services required to run tests.
+
+## Family trees
+
+- `family_tree` table: `name` (globally unique slug), `display_name`, `owner`, `is_primary` (bool)
+- Each `person` record has a required `tree` field (validated against `family_tree.name` on creation)
+- `DELETE /api/trees/{name}` cascade-deletes all persons in the tree and their relationship edges
+- Setting `is_primary: true` on create clears `is_primary` on all other trees for the same owner
+- `GET /api/persons` accepts `?tree=` filter in addition to `?created_by=`
+- Tests seed a default tree (`"test-tree"`) in `setup()` and pass `"tree": TEST_TREE` in every person creation
 
 ## Relationship types
 

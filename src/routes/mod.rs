@@ -6,6 +6,7 @@ use axum::{
 use crate::{
     db::Db,
     handlers::{
+        family_tree::{create_tree, delete_tree, get_tree, list_trees},
         image::{get_image, upload_image},
         person::{create_person, delete_person, get_person, list_persons, update_person},
         relationship::{
@@ -21,6 +22,9 @@ pub fn build_router(db: Db, upload_dir: String) -> Router {
         // API docs
         .route("/api-docs/openapi.json", get(openapi_json))
         .route("/swagger-ui", get(swagger_ui))
+        // Family trees
+        .route("/api/trees", post(create_tree).get(list_trees))
+        .route("/api/trees/{name}", get(get_tree).delete(delete_tree))
         // Persons
         .route("/api/persons", post(create_person).get(list_persons))
         .route(
