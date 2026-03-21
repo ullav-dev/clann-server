@@ -9,7 +9,7 @@ use serde::Deserialize;
 use surrealdb::types::{RecordId, RecordIdKey, SurrealValue};
 
 use crate::{
-    db::Db,
+    db::{Db, DbConn},
     error::{AppError, ErrorResponse},
     handlers::person::{PersonFilter, check_ownership},
     models::{
@@ -68,6 +68,8 @@ pub async fn add_relationship(
     Query(filter): Query<PersonFilter>,
     Json(payload): Json<AddRelationshipRequest>,
 ) -> Result<StatusCode, AppError> {
+    let db = db.lock().await;
+
     if filter.created_by.is_some() {
         let person: Option<Person> = db.select(("person", id.as_str())).await?;
         check_ownership(&person.ok_or(AppError::NotFound)?, &filter.created_by)?;
@@ -103,7 +105,7 @@ pub async fn add_relationship(
                 .await?;
         }
         RelationshipType::Spouse => {
-            // Add both directions in a single query to avoid concurrent SurrealDB WebSocket usage.
+            // Both directions in a single query — no await gap between them.
             let sp_from = payload.spouse_from.as_deref().unwrap_or_default().to_string();
             let sp_to = payload.spouse_to.as_deref().unwrap_or_default().to_string();
             db.query(
@@ -138,6 +140,8 @@ pub async fn get_relationships(
     Path(id): Path<String>,
     Query(filter): Query<PersonFilter>,
 ) -> Result<Json<RelationshipsResponse>, AppError> {
+    let db = db.lock().await;
+
     if filter.created_by.is_some() {
         let person: Option<Person> = db.select(("person", id.as_str())).await?;
         check_ownership(&person.ok_or(AppError::NotFound)?, &filter.created_by)?;
@@ -178,7 +182,7 @@ pub async fn get_relationships(
         .collect();
 
     // Spouses: bidirectional edges exist, so forward query is sufficient.
-    let spouse = fetch_spouses(&db, &person_id).await?;
+    let spouse = fetch_spouses(&*db, &person_id).await?;
 
     Ok(Json(RelationshipsResponse { father, mother, siblings, spouse }))
 }
@@ -202,6 +206,8 @@ pub async fn delete_relationship(
     Path((id, rel_type, related_id)): Path<(String, String, String)>,
     Query(filter): Query<PersonFilter>,
 ) -> Result<StatusCode, AppError> {
+    let db = db.lock().await;
+
     if filter.created_by.is_some() {
         let person: Option<Person> = db.select(("person", id.as_str())).await?;
         check_ownership(&person.ok_or(AppError::NotFound)?, &filter.created_by)?;
@@ -249,7 +255,11 @@ pub async fn get_family_tree(
     Path(id): Path<String>,
     Query(filter): Query<PersonFilter>,
 ) -> Result<Json<FamilyTreeNode>, AppError> {
-    let person: Option<Person> = db.select(("person", id.as_str())).await?;
+    let person = {
+        let conn = db.lock().await;
+        let p: Option<Person> = conn.select(("person", id.as_str())).await?;
+        p
+    };
     let person = person.ok_or(AppError::NotFound)?;
     check_ownership(&person, &filter.created_by)?;
 
@@ -259,6 +269,8 @@ pub async fn get_family_tree(
 
 /// Recursively build a `FamilyTreeNode` up to `depth` generations.
 /// `include_root_extras` is true only for the root call — fetches children and spouses.
+/// The `Db` (Arc<Mutex<DbConn>>) is locked for each batch of queries and released
+/// before any recursive call, preventing deadlocks.
 fn build_tree_node(
     db: Db,
     person: Person,
@@ -267,9 +279,18 @@ fn build_tree_node(
 ) -> Pin<Box<dyn Future<Output = Result<FamilyTreeNode, AppError>> + Send>> {
     Box::pin(async move {
         let (children, spouse, siblings) = if include_root_extras {
-            let child_persons = fetch_children(&db, &person.id).await?;
-            let spouse_persons = fetch_spouses(&db, &person.id).await?;
-            let sibling_persons = fetch_siblings(&db, &person.id).await?;
+            let child_persons = {
+                let conn = db.lock().await;
+                fetch_children(&*conn, &person.id).await?
+            };
+            let spouse_persons = {
+                let conn = db.lock().await;
+                fetch_spouses(&*conn, &person.id).await?
+            };
+            let sibling_persons = {
+                let conn = db.lock().await;
+                fetch_siblings(&*conn, &person.id).await?
+            };
 
             let mut child_nodes = Vec::new();
             for p in child_persons {
@@ -306,8 +327,14 @@ fn build_tree_node(
             });
         }
 
-        let father_persons = fetch_relatives(&db, &person.id, "has_father").await?;
-        let mother_persons = fetch_relatives(&db, &person.id, "has_mother").await?;
+        let father_persons = {
+            let conn = db.lock().await;
+            fetch_relatives(&*conn, &person.id, "has_father").await?
+        };
+        let mother_persons = {
+            let conn = db.lock().await;
+            fetch_relatives(&*conn, &person.id, "has_mother").await?
+        };
 
         let mut father = Vec::new();
         for p in father_persons {
@@ -337,7 +364,7 @@ fn build_tree_node(
     })
 }
 
-async fn fetch_siblings(db: &Db, person_id: &RecordId) -> Result<Vec<Person>, AppError> {
+async fn fetch_siblings(db: &DbConn, person_id: &RecordId) -> Result<Vec<Person>, AppError> {
     let mut res = db
         .query(
             "SELECT ->has_sibling->person.* AS out_siblings, \
@@ -353,7 +380,7 @@ async fn fetch_siblings(db: &Db, person_id: &RecordId) -> Result<Vec<Person>, Ap
     Ok(siblings)
 }
 
-async fn fetch_relatives(db: &Db, from: &RecordId, rel: &str) -> Result<Vec<Person>, AppError> {
+async fn fetch_relatives(db: &DbConn, from: &RecordId, rel: &str) -> Result<Vec<Person>, AppError> {
     let query = format!("SELECT ->{}->person.* AS persons FROM $id", rel);
     let mut res = db.query(query).bind(("id", from.clone())).await?;
     let rows: Vec<PersonsRow> = res.take(0)?;
@@ -361,7 +388,7 @@ async fn fetch_relatives(db: &Db, from: &RecordId, rel: &str) -> Result<Vec<Pers
 }
 
 /// Fetch all people who have `parent_id` as their father or mother.
-async fn fetch_children(db: &Db, parent_id: &RecordId) -> Result<Vec<Person>, AppError> {
+async fn fetch_children(db: &DbConn, parent_id: &RecordId) -> Result<Vec<Person>, AppError> {
     let mut father_res = db
         .query("SELECT <-has_father<-person.* AS persons FROM $id")
         .bind(("id", parent_id.clone()))
@@ -392,7 +419,7 @@ async fn fetch_children(db: &Db, parent_id: &RecordId) -> Result<Vec<Person>, Ap
 
 /// Fetch spouses with edge date attributes.
 /// Because `has_spouse` edges are added bidirectionally, a forward query is sufficient.
-async fn fetch_spouses(db: &Db, person_id: &RecordId) -> Result<Vec<SpouseInfo>, AppError> {
+async fn fetch_spouses(db: &DbConn, person_id: &RecordId) -> Result<Vec<SpouseInfo>, AppError> {
     #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
     struct SpouseEdgeRow {
         person: Person,
@@ -440,6 +467,8 @@ pub async fn update_spouse_dates(
     Query(filter): Query<PersonFilter>,
     Json(payload): Json<UpdateSpouseDatesRequest>,
 ) -> Result<StatusCode, AppError> {
+    let db = db.lock().await;
+
     if filter.created_by.is_some() {
         let person: Option<Person> = db.select(("person", id.as_str())).await?;
         check_ownership(&person.ok_or(AppError::NotFound)?, &filter.created_by)?;

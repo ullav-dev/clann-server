@@ -31,6 +31,8 @@ pub async fn create_tree(
     State(db): State<Db>,
     Json(payload): Json<CreateFamilyTree>,
 ) -> Result<(StatusCode, Json<FamilyTree>), AppError> {
+    let db = db.lock().await;
+
     // Enforce unique name
     let existing: Option<FamilyTree> = db
         .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
@@ -70,6 +72,7 @@ pub async fn list_trees(
     State(db): State<Db>,
     Query(filter): Query<TreeFilter>,
 ) -> Result<Json<Vec<FamilyTree>>, AppError> {
+    let db = db.lock().await;
     let trees: Vec<FamilyTree> = match filter.owner {
         Some(ref owner) => db
             .query("SELECT * FROM family_tree WHERE owner = $owner")
@@ -97,6 +100,7 @@ pub async fn get_tree(
     State(db): State<Db>,
     Path(name): Path<String>,
 ) -> Result<Json<FamilyTree>, AppError> {
+    let db = db.lock().await;
     let tree: Option<FamilyTree> = db
         .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
         .bind(("name", name))
@@ -121,6 +125,8 @@ pub async fn set_primary_tree(
     State(db): State<Db>,
     Path(name): Path<String>,
 ) -> Result<Json<FamilyTree>, AppError> {
+    let db = db.lock().await;
+
     // Verify the tree exists and get its owner
     let tree: Option<FamilyTree> = db
         .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
@@ -162,6 +168,8 @@ pub async fn delete_tree(
     State(db): State<Db>,
     Path(name): Path<String>,
 ) -> Result<StatusCode, AppError> {
+    let db = db.lock().await;
+
     // Verify the tree exists
     let tree: Option<FamilyTree> = db
         .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")

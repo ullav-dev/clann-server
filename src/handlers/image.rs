@@ -43,7 +43,7 @@ pub async fn upload_image(
     mut multipart: Multipart,
 ) -> Result<StatusCode, AppError> {
     // Verify person exists and caller has access.
-    let person: Option<Person> = db.select(("person", id.as_str())).await?;
+    let person: Option<Person> = db.lock().await.select(("person", id.as_str())).await?;
     let person = person.ok_or(AppError::NotFound)?;
     check_ownership(&person, &filter.created_by)?;
 
@@ -105,6 +105,7 @@ pub async fn upload_image(
 
         // Persist filename in DB.
         let _: Option<Person> = db
+            .lock().await
             .update(("person", id.as_str()))
             .merge(json!({ "image_path": filename }))
             .await?;
@@ -132,7 +133,7 @@ pub async fn get_image(
     Extension(upload_dir): Extension<String>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let person: Option<Person> = db.select(("person", id.as_str())).await?;
+    let person: Option<Person> = db.lock().await.select(("person", id.as_str())).await?;
     let person = person.ok_or(AppError::NotFound)?;
 
     let filename = person.image_path.ok_or(AppError::NotFound)?;

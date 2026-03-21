@@ -52,6 +52,8 @@ pub async fn create_person(
     State(db): State<Db>,
     Json(payload): Json<CreatePerson>,
 ) -> Result<(StatusCode, Json<Person>), AppError> {
+    let db = db.lock().await;
+
     // Validate the specified tree exists
     let tree_exists: Option<FamilyTree> = db
         .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
@@ -85,6 +87,7 @@ pub async fn list_persons(
     State(db): State<Db>,
     Query(filter): Query<PersonFilter>,
 ) -> Result<Json<Vec<Person>>, AppError> {
+    let db = db.lock().await;
     let creator_filter = filter.created_by.as_deref().filter(|c| !is_admin(c));
 
     let persons: Vec<Person> = match (creator_filter, filter.tree.as_deref()) {
@@ -126,6 +129,7 @@ pub async fn get_person(
     Path(id): Path<String>,
     Query(filter): Query<PersonFilter>,
 ) -> Result<Json<Person>, AppError> {
+    let db = db.lock().await;
     let person: Option<Person> = db.select(("person", id.as_str())).await?;
     let person = person.ok_or(AppError::NotFound)?;
     check_ownership(&person, &filter.created_by)?;
@@ -151,6 +155,7 @@ pub async fn update_person(
     Query(filter): Query<PersonFilter>,
     Json(payload): Json<UpdatePerson>,
 ) -> Result<Json<Person>, AppError> {
+    let db = db.lock().await;
     if filter.created_by.is_some() {
         let check: Option<Person> = db.select(("person", id.as_str())).await?;
         check_ownership(&check.ok_or(AppError::NotFound)?, &filter.created_by)?;
@@ -178,6 +183,7 @@ pub async fn delete_person(
     Path(id): Path<String>,
     Query(filter): Query<PersonFilter>,
 ) -> Result<StatusCode, AppError> {
+    let db = db.lock().await;
     if filter.created_by.is_some() {
         let check: Option<Person> = db.select(("person", id.as_str())).await?;
         check_ownership(&check.ok_or(AppError::NotFound)?, &filter.created_by)?;

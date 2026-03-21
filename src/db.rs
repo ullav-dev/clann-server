@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use tokio::sync::Mutex;
 use surrealdb::{
     engine::any::{self, Any},
     opt::auth::Root,
@@ -6,7 +9,17 @@ use surrealdb::{
 
 use crate::config::Config;
 
-pub type Db = Surreal<Any>;
+/// The inner SurrealDB connection type.
+pub type DbConn = Surreal<Any>;
+
+/// The shared database state: a mutex-wrapped connection.
+///
+/// `Surreal<Any>` over WebSocket maintains server-side session state
+/// (namespace / database).  Concurrent queries on the same connection can
+/// interleave and corrupt that state, producing "Connection uninitialised" or
+/// "Specify a namespace to use" errors.  Wrapping in a `Mutex` serialises all
+/// database access, which is perfectly adequate for this application's load.
+pub type Db = Arc<Mutex<DbConn>>;
 
 pub async fn connect(config: &Config) -> anyhow::Result<Db> {
     let db = any::connect(&config.db_url).await?;
@@ -29,5 +42,5 @@ pub async fn connect(config: &Config) -> anyhow::Result<Db> {
 
     tracing::info!("Connected to SurrealDB at {}", config.db_url);
 
-    Ok(db)
+    Ok(Arc::new(Mutex::new(db)))
 }
