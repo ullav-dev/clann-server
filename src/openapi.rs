@@ -22,6 +22,7 @@ use crate::{
         crate::handlers::family_tree::list_trees,
         crate::handlers::family_tree::get_tree,
         crate::handlers::family_tree::delete_tree,
+        crate::handlers::family_tree::set_primary_tree,
         crate::handlers::person::create_person,
         crate::handlers::person::list_persons,
         crate::handlers::person::get_person,

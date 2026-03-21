@@ -106,6 +106,47 @@ pub async fn get_tree(
 }
 
 #[utoipa::path(
+    patch,
+    path = "/api/trees/{name}/set-primary",
+    params(
+        ("name" = String, Path, description = "Unique tree name")
+    ),
+    responses(
+        (status = 200, description = "Tree set as primary", body = FamilyTree),
+        (status = 404, description = "Family tree not found", body = ErrorResponse),
+    ),
+    tag = "trees"
+)]
+pub async fn set_primary_tree(
+    State(db): State<Db>,
+    Path(name): Path<String>,
+) -> Result<Json<FamilyTree>, AppError> {
+    // Verify the tree exists and get its owner
+    let tree: Option<FamilyTree> = db
+        .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
+        .bind(("name", name.clone()))
+        .await?
+        .take(0)?;
+    let tree = tree.ok_or(AppError::NotFound)?;
+
+    // Clear is_primary on all trees for this owner, then set this one
+    db.query(
+        "UPDATE family_tree SET is_primary = false WHERE owner = $owner;
+         UPDATE family_tree SET is_primary = true  WHERE name  = $name;",
+    )
+    .bind(("owner", tree.owner.clone()))
+    .bind(("name", name.clone()))
+    .await?;
+
+    let updated: Option<FamilyTree> = db
+        .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
+        .bind(("name", name))
+        .await?
+        .take(0)?;
+    Ok(Json(updated.ok_or(AppError::NotFound)?))
+}
+
+#[utoipa::path(
     delete,
     path = "/api/trees/{name}",
     params(
