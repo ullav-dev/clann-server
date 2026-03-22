@@ -23,8 +23,10 @@ DEFINE FIELD verified                    ON TABLE person TYPE bool DEFAULT false
 DEFINE FIELD IF NOT EXISTS biography     ON TABLE person TYPE option<string> ASSERT $value = NONE OR string::len($value) <= 1000;
 DEFINE FIELD IF NOT EXISTS created_by    ON TABLE person TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS tree          ON TABLE person TYPE option<string>;
-DEFINE INDEX IF NOT EXISTS idx_created_by ON TABLE person COLUMNS created_by;
-DEFINE INDEX IF NOT EXISTS idx_person_tree ON TABLE person COLUMNS tree;
+DEFINE FIELD IF NOT EXISTS trees         ON TABLE person TYPE array<string> DEFAULT [];
+DEFINE INDEX IF NOT EXISTS idx_created_by  ON TABLE person COLUMNS created_by;
+REMOVE INDEX IF EXISTS idx_person_tree ON TABLE person;
+DEFINE INDEX IF NOT EXISTS idx_person_trees ON TABLE person COLUMNS trees;
 
 DEFINE TABLE IF NOT EXISTS has_father  TYPE RELATION IN person OUT person SCHEMAFULL;
 DEFINE TABLE IF NOT EXISTS has_mother  TYPE RELATION IN person OUT person SCHEMAFULL;

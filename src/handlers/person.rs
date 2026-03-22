@@ -4,11 +4,12 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
+use surrealdb::types::RecordId;
 
 use crate::{
     db::Db,
     error::{AppError, ErrorResponse},
-    models::{family_tree::FamilyTree, person::{CreatePerson, Person, UpdatePerson}},
+    models::{family_tree::FamilyTree, person::{CreatePerson, Person, TreeMembershipRequest, UpdatePerson}},
 };
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -54,17 +55,23 @@ pub async fn create_person(
 ) -> Result<(StatusCode, Json<Person>), AppError> {
     let db = db.lock().await;
 
-    // Validate the specified tree exists
-    let tree_exists: Option<FamilyTree> = db
-        .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
-        .bind(("name", payload.tree.clone()))
-        .await?
-        .take(0)?;
-    if tree_exists.is_none() {
-        return Err(AppError::BadRequest(format!(
-            "Family tree '{}' not found",
-            payload.tree
-        )));
+    if payload.trees.is_empty() {
+        return Err(AppError::BadRequest("At least one tree must be specified".to_string()));
+    }
+
+    // Validate all specified trees exist
+    for tree_name in &payload.trees {
+        let tree_exists: Option<FamilyTree> = db
+            .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
+            .bind(("name", tree_name.clone()))
+            .await?
+            .take(0)?;
+        if tree_exists.is_none() {
+            return Err(AppError::BadRequest(format!(
+                "Family tree '{}' not found",
+                tree_name
+            )));
+        }
     }
 
     let body = serde_json::to_value(&payload)
@@ -92,7 +99,7 @@ pub async fn list_persons(
 
     let persons: Vec<Person> = match (creator_filter, filter.tree.as_deref()) {
         (Some(creator), Some(tree)) => db
-            .query("SELECT * FROM person WHERE created_by = $creator AND tree = $tree")
+            .query("SELECT * FROM person WHERE created_by = $creator AND $tree IN trees")
             .bind(("creator", creator.to_string()))
             .bind(("tree", tree.to_string()))
             .await?
@@ -103,7 +110,7 @@ pub async fn list_persons(
             .await?
             .take(0)?,
         (None, Some(tree)) => db
-            .query("SELECT * FROM person WHERE tree = $tree")
+            .query("SELECT * FROM person WHERE $tree IN trees")
             .bind(("tree", tree.to_string()))
             .await?
             .take(0)?,
@@ -189,5 +196,90 @@ pub async fn delete_person(
         check_ownership(&check.ok_or(AppError::NotFound)?, &filter.created_by)?;
     }
     let _: Option<Person> = db.delete(("person", id.as_str())).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/persons/{id}/trees",
+    params(
+        ("id" = String, Path, description = "Person record ID (without the `person:` prefix)")
+    ),
+    request_body = TreeMembershipRequest,
+    responses(
+        (status = 204, description = "Person added to tree"),
+        (status = 400, description = "Tree not found", body = ErrorResponse),
+        (status = 404, description = "Person not found", body = ErrorResponse),
+    ),
+    tag = "persons"
+)]
+pub async fn add_person_to_tree(
+    State(db): State<Db>,
+    Path(id): Path<String>,
+    Query(filter): Query<PersonFilter>,
+    Json(payload): Json<TreeMembershipRequest>,
+) -> Result<StatusCode, AppError> {
+    let db = db.lock().await;
+
+    let person: Option<Person> = db.select(("person", id.as_str())).await?;
+    let person = person.ok_or(AppError::NotFound)?;
+    check_ownership(&person, &filter.created_by)?;
+
+    let tree_exists: Option<FamilyTree> = db
+        .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
+        .bind(("name", payload.tree.clone()))
+        .await?
+        .take(0)?;
+    if tree_exists.is_none() {
+        return Err(AppError::BadRequest(format!(
+            "Family tree '{}' not found",
+            payload.tree
+        )));
+    }
+
+    db.query("UPDATE $person SET trees = array::union(trees, [$tree])")
+        .bind(("person", RecordId::new("person", id.as_str())))
+        .bind(("tree", payload.tree))
+        .await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/persons/{id}/trees/{tree_name}",
+    params(
+        ("id" = String, Path, description = "Person record ID (without the `person:` prefix)"),
+        ("tree_name" = String, Path, description = "Tree name (slug) to remove"),
+    ),
+    responses(
+        (status = 204, description = "Person removed from tree"),
+        (status = 400, description = "Cannot remove from last tree", body = ErrorResponse),
+        (status = 404, description = "Person not found", body = ErrorResponse),
+    ),
+    tag = "persons"
+)]
+pub async fn remove_person_from_tree(
+    State(db): State<Db>,
+    Path((id, tree_name)): Path<(String, String)>,
+    Query(filter): Query<PersonFilter>,
+) -> Result<StatusCode, AppError> {
+    let db = db.lock().await;
+
+    let person: Option<Person> = db.select(("person", id.as_str())).await?;
+    let person = person.ok_or(AppError::NotFound)?;
+    check_ownership(&person, &filter.created_by)?;
+
+    if person.trees.len() <= 1 {
+        return Err(AppError::BadRequest(
+            "Cannot remove person from their last tree".to_string(),
+        ));
+    }
+
+    db.query("UPDATE $person SET trees -= $tree")
+        .bind(("person", RecordId::new("person", id.as_str())))
+        .bind(("tree", tree_name))
+        .await?;
+
     Ok(StatusCode::NO_CONTENT)
 }

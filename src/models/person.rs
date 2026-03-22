@@ -73,8 +73,9 @@ pub struct Person {
     pub biography: Option<String>,
     /// Identifier of the user who created this record.
     pub created_by: Option<String>,
-    /// Name of the family tree this person belongs to.
-    pub tree: Option<String>,
+    /// Family trees this person belongs to (by tree name/slug).
+    #[serde(default)]
+    pub trees: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, SurrealValue)]
@@ -102,7 +103,13 @@ pub struct CreatePerson {
     pub biography: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_by: Option<String>,
-    /// Name of the family tree this person belongs to. Must refer to an existing tree.
+    /// Family trees this person belongs to. Each must refer to an existing tree.
+    pub trees: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct TreeMembershipRequest {
+    /// Tree name (slug) to add or remove.
     pub tree: String,
 }
 

@@ -178,14 +178,16 @@ pub async fn delete_tree(
         .take(0)?;
     tree.ok_or(AppError::NotFound)?;
 
-    // Cascade: delete relationship edges involving persons in this tree, then the persons
+    // Cascade: delete persons exclusively in this tree (with their relationship edges),
+    // then remove the tree from persons that also belong to other trees.
     db.query(
-        "LET $pids = (SELECT VALUE id FROM person WHERE tree = $name);
+        "LET $pids = (SELECT VALUE id FROM person WHERE trees = [$name]);
          DELETE has_father  WHERE in IN $pids OR out IN $pids;
          DELETE has_mother  WHERE in IN $pids OR out IN $pids;
          DELETE has_sibling WHERE in IN $pids OR out IN $pids;
          DELETE has_spouse  WHERE in IN $pids OR out IN $pids;
-         DELETE person WHERE tree = $name;
+         DELETE person WHERE id IN $pids;
+         UPDATE person SET trees -= $name WHERE $name IN trees;
          DELETE family_tree WHERE name = $name;",
     )
     .bind(("name", name))

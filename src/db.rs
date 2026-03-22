@@ -40,6 +40,9 @@ pub async fn connect(config: &Config) -> anyhow::Result<Db> {
     // Backfill any records created before the `verified` field was introduced.
     db.query("UPDATE person SET verified = false WHERE verified = NONE").await?;
 
+    // Backfill: migrate single `tree` string to `trees` array for existing records.
+    db.query("UPDATE person SET trees = [tree] WHERE tree != NONE AND (trees = NONE OR trees = [])").await?;
+
     tracing::info!("Connected to SurrealDB at {}", config.db_url);
 
     Ok(Arc::new(Mutex::new(db)))
