@@ -7,7 +7,7 @@ use crate::{
     db::Db,
     handlers::{
         family_tree::{create_tree, delete_tree, get_tree, list_trees, set_primary_tree},
-        image::{get_image, upload_image},
+        image::{get_image, get_life_image, upload_image, upload_life_image},
         person::{add_person_to_tree, create_person, delete_person, get_person, list_persons, remove_person_from_tree, update_person},
         relationship::{
             add_relationship, delete_relationship, get_family_tree, get_relationships,
@@ -38,6 +38,10 @@ pub fn build_router(db: Db, upload_dir: String) -> Router {
         .route(
             "/api/persons/{id}/image",
             post(upload_image).get(get_image),
+        )
+        .route(
+            "/api/persons/{id}/life-image",
+            post(upload_life_image).get(get_life_image),
         )
         // Relationships
         .route(

@@ -63,6 +63,7 @@ pub struct Person {
     pub date_of_death: Option<String>,
     pub place_of_death: Option<String>,
     pub image_path: Option<String>,
+    pub life_image_path: Option<String>,
     pub nickname: Option<String>,
     pub username: Option<String>,
     pub email: Option<String>,
