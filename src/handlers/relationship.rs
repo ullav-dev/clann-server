@@ -435,7 +435,7 @@ async fn fetch_spouses(db: &DbConn, person_id: &RecordId) -> Result<Vec<SpouseIn
           place_of_death: out.place_of_death, image_path: out.image_path, \
           nickname: out.nickname, username: out.username, email: out.email, \
           verified: out.verified, biography: out.biography, \
-          created_by: out.created_by } AS person, \
+          created_by: out.created_by, trees: out.trees } AS person, \
         spouse_from, spouse_to \
         FROM has_spouse WHERE in = $id";
 
