@@ -28,7 +28,7 @@ cargo fmt            # Format code
 ```
 src/main.rs                    entry point
 src/config.rs                  Config::from_env() — supports DB_USERNAME_FILE/DB_PASSWORD_FILE
-src/db.rs                      connect() runs schema migration; pub type Db = Surreal<Any>
+src/db.rs                      connect() runs schema migration; pub type Db = Arc<Mutex<Surreal<Any>>>
 src/error.rs                   AppError → JSON { "error": "..." }
 src/lib.rs                     pub mod declarations for integration tests
 src/models/family_tree.rs      FamilyTree, CreateFamilyTree
@@ -39,12 +39,12 @@ src/handlers/person.rs         CRUD handlers (validates tree exists on create)
 src/handlers/relationship.rs   relationship + family tree handlers
 src/handlers/image.rs          image upload/retrieval handlers
 src/openapi.rs                 ApiDoc, swagger_ui(), openapi_json()
-src/routes/mod.rs              build_router(db, upload_dir)
+src/routes/mod.rs              build_router(db, upload_dir, enable_docs)
 migrations/schema.surql        SurrealDB schema (run at startup via include_str!)
 openapi.json                   committed OpenAPI spec (regenerate with: curl localhost:3000/api-docs/openapi.json)
 tests/api.rs                   integration tests (52 tests)
 Dockerfile                     multi-stage build (rust:1.93-slim → debian:bookworm-slim)
-docker-compose.yml             production compose: surrealdb + migrate + server
+docker-compose-prod.yml        production compose: surrealdb + migrate + server (all on ullav-net)
 .env.prod                      non-secret env vars for docker-compose (gitignored)
 secrets/                       Docker secret files: db_username.txt, db_password.txt (gitignored)
 scripts/migrate.sh             migration runner — applies .surql files with schema_migration tracking
@@ -65,6 +65,7 @@ scripts/Dockerfile.migrate     alpine + surreal binary for the migrate service
 | `PORT`                | `3000`                     | HTTP listen port                                                      |
 | `UPLOAD_DIR`          | `./uploads`                | Directory for person image files                                      |
 | `DB_PATH`             | `/opt/ullav/clann/data.db` | SurrealDB data file path (used when starting SurrealDB with `surrealkv:$DB_PATH`) |
+| `ENABLE_DOCS`         | `true`                     | Set to `false` to disable `/swagger-ui` and `/api-docs/openapi.json`              |
 
 ## SurrealDB notes
 
@@ -85,11 +86,11 @@ Integration tests use `any::connect("mem://")` with a unique namespace/database 
 ## Family trees
 
 - `family_tree` table: `name` (globally unique slug), `display_name`, `owner`, `is_primary` (bool)
-- Each `person` record has a required `tree` field (validated against `family_tree.name` on creation)
+- Each `person` record has a `trees: Vec<String>` field — at least one tree required on creation, each validated against `family_tree.name`
 - `DELETE /api/trees/{name}` cascade-deletes all persons in the tree and their relationship edges
 - Setting `is_primary: true` on create clears `is_primary` on all other trees for the same owner
 - `GET /api/persons` accepts `?tree=` filter in addition to `?created_by=`
-- Tests seed a default tree (`"test-tree"`) in `setup()` and pass `"tree": TEST_TREE` in every person creation
+- Tests seed a default tree (`"test-tree"`) in `setup()` and pass `"trees": [TEST_TREE]` in every person creation
 
 ## Relationship types
 

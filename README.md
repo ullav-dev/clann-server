@@ -58,16 +58,19 @@ The OpenAPI JSON spec is also committed at [`openapi.json`](./openapi.json).
 
 All configuration is via environment variables:
 
-| Variable       | Default                    | Description                                        |
-|----------------|----------------------------|----------------------------------------------------|
-| `DB_URL`       | `ws://localhost:8000`      | SurrealDB WebSocket URL                            |
-| `DB_NAMESPACE` | `clann`                    | SurrealDB namespace                                |
-| `DB_DATABASE`  | `ancestry`                 | SurrealDB database                                 |
-| `DB_USERNAME`  | `root`                     | SurrealDB username                                 |
-| `DB_PASSWORD`  | `secret`                   | SurrealDB password                                 |
-| `PORT`         | `3000`                     | HTTP listen port                                   |
-| `UPLOAD_DIR`   | `./uploads`                | Directory for person image files                   |
-| `DB_PATH`      | `/opt/ullav/clann/data.db` | SurrealDB data file path for persistent storage    |
+| Variable            | Default                    | Description                                                           |
+|---------------------|----------------------------|-----------------------------------------------------------------------|
+| `DB_URL`            | `ws://localhost:8000`      | SurrealDB WebSocket URL                                               |
+| `DB_NAMESPACE`      | `clann`                    | SurrealDB namespace                                                   |
+| `DB_DATABASE`       | `ancestry`                 | SurrealDB database                                                    |
+| `DB_USERNAME`       | `root`                     | SurrealDB username                                                    |
+| `DB_USERNAME_FILE`  | —                          | Path to file containing DB username (Docker secrets — takes priority) |
+| `DB_PASSWORD`       | `secret`                   | SurrealDB password                                                    |
+| `DB_PASSWORD_FILE`  | —                          | Path to file containing DB password (Docker secrets — takes priority) |
+| `PORT`              | `3000`                     | HTTP listen port                                                      |
+| `UPLOAD_DIR`        | `./uploads`                | Directory for person image files                                      |
+| `DB_PATH`           | `/opt/ullav/clann/data.db` | SurrealDB data file path for persistent storage                       |
+| `ENABLE_DOCS`       | `true`                     | Set to `false` to disable Swagger UI and OpenAPI spec endpoints       |
 
 ## API
 
@@ -127,7 +130,7 @@ Persons must belong to a family tree. The `tree` field is required on creation a
 | `family_name`    | yes      |                                          |
 | `first_name`     | yes      |                                          |
 | `sex`            | yes      | `"Male"` or `"Female"`                   |
-| `tree`           | yes      | Name of the family tree this person belongs to |
+| `trees`          | yes      | Array of family tree names this person belongs to (at least one required) |
 | `middle_name`    | no       |                                          |
 | `date_of_birth`  | no       | ISO 8601 or free-form string             |
 | `place_of_birth` | no       |                                          |
