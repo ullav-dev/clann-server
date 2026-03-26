@@ -16,8 +16,8 @@ impl Config {
             db_url: std::env::var("DB_URL").unwrap_or_else(|_| "ws://localhost:8000".to_string()),
             db_namespace: std::env::var("DB_NAMESPACE").unwrap_or_else(|_| "clann".to_string()),
             db_database: std::env::var("DB_DATABASE").unwrap_or_else(|_| "ancestry".to_string()),
-            db_username: std::env::var("DB_USERNAME").unwrap_or_else(|_| "root".to_string()),
-            db_password: std::env::var("DB_PASSWORD").unwrap_or_else(|_| "secret".to_string()),
+            db_username: env_or_file("DB_USERNAME", "root"),
+            db_password: env_or_file("DB_PASSWORD", "secret"),
             server_port: std::env::var("PORT")
                 .ok()
                 .and_then(|p| p.parse().ok())
@@ -27,4 +27,17 @@ impl Config {
                 .unwrap_or_else(|_| "/opt/ullav/clann/data.db".to_string()),
         }
     }
+}
+
+/// Reads a config value from `KEY_FILE` (Docker secrets pattern) if set,
+/// otherwise falls back to `KEY`, then to `default`.
+fn env_or_file(key: &str, default: &str) -> String {
+    let file_key = format!("{}_FILE", key);
+    if let Ok(path) = std::env::var(&file_key) {
+        return std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("Failed to read secret file {path}: {e}"))
+            .trim()
+            .to_string();
+    }
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
 }

@@ -1,0 +1,51 @@
+services:
+  surrealdb:
+    image: surrealdb/surrealdb:v2
+    restart: unless-stopped
+    command:
+      - start
+      - --user
+      - root
+      - --pass-file
+      - /run/secrets/db_password
+      - --bind
+      - 0.0.0.0:8000
+      - surrealkv:/data/clann.db
+    volumes:
+      - surrealdb_data:/data
+    secrets:
+      - db_password
+    healthcheck:
+      test: ["CMD", "/surreal", "isready", "--endpoint", "http://localhost:8000"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  server:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.prod
+    environment:
+      - DB_USERNAME_FILE=/run/secrets/db_username
+      - DB_PASSWORD_FILE=/run/secrets/db_password
+    secrets:
+      - db_username
+      - db_password
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      surrealdb:
+        condition: service_healthy
+
+volumes:
+  surrealdb_data:
+  uploads:
+
+secrets:
+  db_username:
+    file: ./secrets/db_username.txt
+  db_password:
+    file: ./secrets/db_password.txt
