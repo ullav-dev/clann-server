@@ -1,0 +1,9 @@
+# Copy surreal binary from official image into a shell-capable Alpine container
+FROM surrealdb/surrealdb:v3 AS surreal
+FROM alpine:3.19
+
+COPY --from=surreal /surreal /usr/local/bin/surreal
+COPY scripts/migrate.sh /migrate.sh
+RUN chmod +x /migrate.sh
+
+ENTRYPOINT ["/migrate.sh"]
