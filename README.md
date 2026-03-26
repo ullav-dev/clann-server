@@ -137,7 +137,7 @@ Persons must belong to a family tree. The `tree` field is required on creation a
 | `username`       | no       |                                          |
 | `email`          | no       |                                          |
 | `verified`       | no       | Boolean, defaults to `false`             |
-| `biography`      | no       | Free text, max 1000 characters           |
+| `biography`      | no       | Free text                                |
 | `created_by`     | no       | Identifier of the creator                |
 
 `PUT` uses MERGE semantics — only supplied fields are updated. Omitted or `null` fields leave the existing value unchanged.
@@ -200,11 +200,51 @@ curl -X PATCH http://localhost:3000/api/persons/{id}/spouse-dates/person:{spouse
   -d '{"spouse_from": "1995-06-10", "spouse_to": "2010-03-01"}'
 ```
 
+## Production deployment
+
+The server is distributed as a Docker image at `ghcr.io/ullav-dev/clann-server:latest`.
+
+### Prerequisites
+
+Create a `secrets/` directory with credentials (both files are gitignored):
+
+```bash
+mkdir secrets
+echo -n "root" > secrets/db_username.txt
+echo -n "your-strong-password" > secrets/db_password.txt
+```
+
+Copy `.env.prod` and adjust if needed (no secrets go here):
+
+```
+DB_URL=ws://surrealdb:8000
+DB_NAMESPACE=clann
+DB_DATABASE=ancestry
+PORT=3000
+UPLOAD_DIR=/app/uploads
+```
+
+### Start
+
+```bash
+docker compose up -d
+```
+
+Startup order: SurrealDB starts → `migrate` service applies any new `.surql` files → server starts. Applied migrations are tracked in the `schema_migration` table and skipped on subsequent deploys.
+
+### Secrets
+
+`DB_USERNAME` and `DB_PASSWORD` are read from Docker secrets mounted at `/run/secrets/`. The `_FILE` env var pattern is also supported for non-Docker environments:
+
+```bash
+DB_PASSWORD_FILE=/path/to/secret cargo run
+```
+
 ## Development
 
 ```bash
 cargo build       # Build
-cargo test        # Run integration tests (52 tests, no external DB required)
+cargo test        # Run integration tests (no external DB required)
 cargo clippy      # Lint
 cargo fmt         # Format
 ```

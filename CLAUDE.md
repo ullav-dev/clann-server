@@ -27,7 +27,7 @@ cargo fmt            # Format code
 
 ```
 src/main.rs                    entry point
-src/config.rs                  Config::from_env()
+src/config.rs                  Config::from_env() — supports DB_USERNAME_FILE/DB_PASSWORD_FILE
 src/db.rs                      connect() runs schema migration; pub type Db = Surreal<Any>
 src/error.rs                   AppError → JSON { "error": "..." }
 src/lib.rs                     pub mod declarations for integration tests
@@ -43,20 +43,28 @@ src/routes/mod.rs              build_router(db, upload_dir)
 migrations/schema.surql        SurrealDB schema (run at startup via include_str!)
 openapi.json                   committed OpenAPI spec (regenerate with: curl localhost:3000/api-docs/openapi.json)
 tests/api.rs                   integration tests (52 tests)
+Dockerfile                     multi-stage build (rust:1.93-slim → debian:bookworm-slim)
+docker-compose.yml             production compose: surrealdb + migrate + server
+.env.prod                      non-secret env vars for docker-compose (gitignored)
+secrets/                       Docker secret files: db_username.txt, db_password.txt (gitignored)
+scripts/migrate.sh             migration runner — applies .surql files with schema_migration tracking
+scripts/Dockerfile.migrate     alpine + surreal binary for the migrate service
 ```
 
 ## Environment variables
 
-| Variable       | Default                  | Description                        |
-|----------------|--------------------------|------------------------------------|
-| `DB_URL`       | `ws://localhost:8000`    | SurrealDB WebSocket URL            |
-| `DB_NAMESPACE` | `clann`                  | SurrealDB namespace                |
-| `DB_DATABASE`  | `ancestry`               | SurrealDB database                 |
-| `DB_USERNAME`  | `root`                   | SurrealDB username                 |
-| `DB_PASSWORD`  | `secret`                 | SurrealDB password                 |
-| `PORT`         | `3000`                   | HTTP listen port                   |
-| `UPLOAD_DIR`   | `./uploads`              | Directory for person image files   |
-| `DB_PATH`      | `/opt/ullav/clann/data.db` | SurrealDB data file path (used when starting SurrealDB with `surrealkv:$DB_PATH`) |
+| Variable              | Default                    | Description                                                           |
+|-----------------------|----------------------------|-----------------------------------------------------------------------|
+| `DB_URL`              | `ws://localhost:8000`      | SurrealDB WebSocket URL                                               |
+| `DB_NAMESPACE`        | `clann`                    | SurrealDB namespace                                                   |
+| `DB_DATABASE`         | `ancestry`                 | SurrealDB database                                                    |
+| `DB_USERNAME`         | `root`                     | SurrealDB username                                                    |
+| `DB_USERNAME_FILE`    | —                          | Path to file containing DB username (Docker secrets — takes priority) |
+| `DB_PASSWORD`         | `secret`                   | SurrealDB password                                                    |
+| `DB_PASSWORD_FILE`    | —                          | Path to file containing DB password (Docker secrets — takes priority) |
+| `PORT`                | `3000`                     | HTTP listen port                                                      |
+| `UPLOAD_DIR`          | `./uploads`                | Directory for person image files                                      |
+| `DB_PATH`             | `/opt/ullav/clann/data.db` | SurrealDB data file path (used when starting SurrealDB with `surrealkv:$DB_PATH`) |
 
 ## SurrealDB notes
 
@@ -68,6 +76,7 @@ tests/api.rs                   integration tests (52 tests)
 - The `fetch_spouses` query in `relationship.rs` builds an explicit person sub-object to avoid field name collisions with the edge's own `id` — **any new person fields must also be added to that query**.
 - When adding new fields to the schema after the database already exists, restart the server (which re-runs the migration) then backfill existing records: `UPDATE person SET new_field = <value> WHERE new_field = NONE;`
 - Inspect the live schema with `INFO FOR DB;` or `INFO FOR TABLE person;` in the SurrealQL REPL.
+- Migration state in Docker is tracked in the `schema_migration` table (filename + applied_at). `scripts/migrate.sh` skips already-applied files — safe to run on every deploy.
 
 ## Testing
 
