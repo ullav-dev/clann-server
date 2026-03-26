@@ -5,8 +5,9 @@ use axum::{
 use clann_server::{db::Db, routes::build_router};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{atomic::{AtomicU64, Ordering}, Arc};
 use surrealdb::{engine::any, opt::auth::Root};
+use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 static DB_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -18,26 +19,27 @@ async fn setup() -> axum::Router {
     let ns = format!("test_ns_{}", n);
     let db_name = format!("test_db_{}", n);
 
-    let db: Db = any::connect("mem://").await.unwrap();
-    db.signin(Root {
+    let conn = any::connect("mem://").await.unwrap();
+    conn.signin(Root {
         username: "root".to_string(),
         password: "root".to_string(),
     })
     .await
     .ok(); // embedded engine may not require auth
-    db.use_ns(ns).use_db(db_name).await.unwrap();
+    conn.use_ns(ns).use_db(db_name).await.unwrap();
 
     let schema = include_str!("../migrations/schema.surql");
-    db.query(schema).await.unwrap();
+    conn.query(schema).await.unwrap();
 
     // Seed a default family tree so tests can create persons without needing their own tree setup
-    db.query(
+    conn.query(
         "CREATE family_tree CONTENT { name: $name, display_name: 'Test Tree', owner: 'testowner', is_primary: true }",
     )
     .bind(("name", TEST_TREE))
     .await
     .unwrap();
 
+    let db: Db = Arc::new(Mutex::new(conn));
     build_router(db, std::env::temp_dir().to_string_lossy().into_owned(), true)
 }
 
@@ -164,7 +166,7 @@ async fn test_create_person_returns_201_with_body() {
     let app = setup().await;
     let (status, body) = create_person_req(
         app,
-        json!({"family_name": "Smith", "first_name": "John", "sex": "Male", "tree": TEST_TREE}),
+        json!({"family_name": "Smith", "first_name": "John", "sex": "Male", "trees": [TEST_TREE]}),
     )
     .await;
 
@@ -187,7 +189,7 @@ async fn test_create_person_with_optional_fields() {
             "middle_name": "Marie",
             "date_of_birth": "1990-05-15",
             "place_of_birth": "Dublin",
-            "tree": TEST_TREE,
+            "trees": [TEST_TREE],
         }),
     )
     .await;
@@ -232,7 +234,7 @@ async fn test_list_persons_returns_all() {
             .clone()
             .oneshot(post_json(
                 "/api/persons",
-                json!({"family_name": "Test", "first_name": name, "sex": "Female", "tree": TEST_TREE}),
+                json!({"family_name": "Test", "first_name": name, "sex": "Female", "trees": [TEST_TREE]}),
             ))
             .await
             .unwrap();
@@ -250,7 +252,7 @@ async fn test_get_person_by_id() {
     let app = setup().await;
     let (_, created) = create_person_req(
         app.clone(),
-        json!({"family_name": "Walsh", "first_name": "Eoin", "sex": "Male", "tree": TEST_TREE}),
+        json!({"family_name": "Walsh", "first_name": "Eoin", "sex": "Male", "trees": [TEST_TREE]}),
     )
     .await;
     let id = record_id(&created);
@@ -283,7 +285,7 @@ async fn test_update_person_merges_fields() {
     let app = setup().await;
     let (_, created) = create_person_req(
         app.clone(),
-        json!({"family_name": "Murphy", "first_name": "Seán", "sex": "Male", "tree": TEST_TREE}),
+        json!({"family_name": "Murphy", "first_name": "Seán", "sex": "Male", "trees": [TEST_TREE]}),
     )
     .await;
     let id = record_id(&created);
@@ -323,7 +325,7 @@ async fn test_delete_person_returns_204() {
     let app = setup().await;
     let (_, created) = create_person_req(
         app.clone(),
-        json!({"family_name": "Brennan", "first_name": "Aisling", "sex": "Female", "tree": TEST_TREE}),
+        json!({"family_name": "Brennan", "first_name": "Aisling", "sex": "Female", "trees": [TEST_TREE]}),
     )
     .await;
     let id = record_id(&created);
@@ -359,7 +361,7 @@ async fn test_delete_nonexistent_person_returns_204() {
 async fn make_person(app: axum::Router, name: &str, sex: &str) -> String {
     let (_, body) = create_person_req(
         app,
-        json!({"family_name": "Test", "first_name": name, "sex": sex, "tree": TEST_TREE}),
+        json!({"family_name": "Test", "first_name": name, "sex": sex, "trees": [TEST_TREE]}),
     )
     .await;
     record_id(&body)
@@ -611,7 +613,7 @@ async fn test_create_person_with_created_by() {
     let app = setup().await;
     let (status, body) = create_person_req(
         app,
-        json!({"family_name": "Nolan", "first_name": "Brian", "sex": "Male", "created_by": "admin", "tree": TEST_TREE}),
+        json!({"family_name": "Nolan", "first_name": "Brian", "sex": "Male", "created_by": "admin", "trees": [TEST_TREE]}),
     )
     .await;
 
@@ -627,13 +629,13 @@ async fn test_list_persons_filter_by_created_by() {
     for name in ["Anna", "Amy"] {
         create_person_req(
             app.clone(),
-            json!({"family_name": "Test", "first_name": name, "sex": "Female", "created_by": "alice", "tree": TEST_TREE}),
+            json!({"family_name": "Test", "first_name": name, "sex": "Female", "created_by": "alice", "trees": [TEST_TREE]}),
         )
         .await;
     }
     create_person_req(
         app.clone(),
-        json!({"family_name": "Test", "first_name": "Bob", "sex": "Male", "created_by": "bob", "tree": TEST_TREE}),
+        json!({"family_name": "Test", "first_name": "Bob", "sex": "Male", "created_by": "bob", "trees": [TEST_TREE]}),
     )
     .await;
 
@@ -659,7 +661,7 @@ async fn test_list_persons_filter_no_matches_returns_empty() {
     let app = setup().await;
     create_person_req(
         app.clone(),
-        json!({"family_name": "Test", "first_name": "Only", "sex": "Male", "created_by": "alice", "tree": TEST_TREE}),
+        json!({"family_name": "Test", "first_name": "Only", "sex": "Male", "created_by": "alice", "trees": [TEST_TREE]}),
     )
     .await;
 
@@ -677,7 +679,7 @@ async fn test_created_by_is_null_when_not_set() {
     let app = setup().await;
     let (_, body) = create_person_req(
         app,
-        json!({"family_name": "Ghost", "first_name": "User", "sex": "Male", "tree": TEST_TREE}),
+        json!({"family_name": "Ghost", "first_name": "User", "sex": "Male", "trees": [TEST_TREE]}),
     )
     .await;
 
@@ -689,7 +691,7 @@ async fn test_update_person_created_by() {
     let app = setup().await;
     let (_, created) = create_person_req(
         app.clone(),
-        json!({"family_name": "Casey", "first_name": "Pat", "sex": "Male", "tree": TEST_TREE}),
+        json!({"family_name": "Casey", "first_name": "Pat", "sex": "Male", "trees": [TEST_TREE]}),
     )
     .await;
     let id = record_id(&created);
@@ -714,7 +716,7 @@ async fn test_list_filter_created_by_is_case_sensitive() {
     let app = setup().await;
     create_person_req(
         app.clone(),
-        json!({"family_name": "Test", "first_name": "Lower", "sex": "Male", "created_by": "alice", "tree": TEST_TREE}),
+        json!({"family_name": "Test", "first_name": "Lower", "sex": "Male", "created_by": "alice", "trees": [TEST_TREE]}),
     )
     .await;
 
@@ -733,18 +735,18 @@ async fn test_list_filter_created_by_only_returns_own_records() {
     let app = setup().await;
     create_person_req(
         app.clone(),
-        json!({"family_name": "A", "first_name": "One", "sex": "Male", "created_by": "userA", "tree": TEST_TREE}),
+        json!({"family_name": "A", "first_name": "One", "sex": "Male", "created_by": "userA", "trees": [TEST_TREE]}),
     )
     .await;
     create_person_req(
         app.clone(),
-        json!({"family_name": "B", "first_name": "Two", "sex": "Female", "created_by": "userB", "tree": TEST_TREE}),
+        json!({"family_name": "B", "first_name": "Two", "sex": "Female", "created_by": "userB", "trees": [TEST_TREE]}),
     )
     .await;
     // No created_by set
     create_person_req(
         app.clone(),
-        json!({"family_name": "C", "first_name": "Three", "sex": "Male", "tree": TEST_TREE}),
+        json!({"family_name": "C", "first_name": "Three", "sex": "Male", "trees": [TEST_TREE]}),
     )
     .await;
 
@@ -773,7 +775,7 @@ async fn test_create_person_with_profile_fields() {
             "nickname": "Neve",
             "username": "nkelly",
             "email": "niamh@example.com",
-            "tree": TEST_TREE,
+            "trees": [TEST_TREE],
         }),
     )
     .await;
@@ -789,7 +791,7 @@ async fn test_profile_fields_are_null_when_not_set() {
     let app = setup().await;
     let (_, body) = create_person_req(
         app,
-        json!({"family_name": "Ryan", "first_name": "Cian", "sex": "Male", "tree": TEST_TREE}),
+        json!({"family_name": "Ryan", "first_name": "Cian", "sex": "Male", "trees": [TEST_TREE]}),
     )
     .await;
 
@@ -803,7 +805,7 @@ async fn test_update_person_profile_fields() {
     let app = setup().await;
     let (_, created) = create_person_req(
         app.clone(),
-        json!({"family_name": "Burke", "first_name": "Aoife", "sex": "Female", "tree": TEST_TREE}),
+        json!({"family_name": "Burke", "first_name": "Aoife", "sex": "Female", "trees": [TEST_TREE]}),
     )
     .await;
     let id = record_id(&created);
@@ -837,7 +839,7 @@ async fn test_update_omits_null_fields_leaving_existing_values_intact() {
             "first_name": "Oisín",
             "sex": "Male",
             "nickname": "Osh",
-            "tree": TEST_TREE,
+            "trees": [TEST_TREE],
         }),
     )
     .await;
@@ -1233,7 +1235,7 @@ async fn test_delete_family_tree_cascades_persons() {
     // Create a person in that tree
     let (_, person) = create_person_req(
         app.clone(),
-        json!({"family_name": "Test", "first_name": "Gone", "sex": "Male", "tree": "cascade-tree"}),
+        json!({"family_name": "Test", "first_name": "Gone", "sex": "Male", "trees": ["cascade-tree"]}),
     )
     .await;
     let person_id = record_id(&person);
@@ -1267,7 +1269,7 @@ async fn test_create_person_with_unknown_tree_returns_400() {
     let app = setup().await;
     let (status, body) = create_person_req(
         app,
-        json!({"family_name": "Smith", "first_name": "John", "sex": "Male", "tree": "no-such-tree"}),
+        json!({"family_name": "Smith", "first_name": "John", "sex": "Male", "trees": ["no-such-tree"]}),
     )
     .await;
 
@@ -1290,12 +1292,12 @@ async fn test_list_persons_filter_by_tree() {
 
     create_person_req(
         app.clone(),
-        json!({"family_name": "A", "first_name": "Alice", "sex": "Female", "tree": TEST_TREE}),
+        json!({"family_name": "A", "first_name": "Alice", "sex": "Female", "trees": [TEST_TREE]}),
     )
     .await;
     create_person_req(
         app.clone(),
-        json!({"family_name": "B", "first_name": "Bob", "sex": "Male", "tree": "other-tree"}),
+        json!({"family_name": "B", "first_name": "Bob", "sex": "Male", "trees": ["other-tree"]}),
     )
     .await;
 
