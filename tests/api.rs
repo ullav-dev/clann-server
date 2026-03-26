@@ -38,7 +38,7 @@ async fn setup() -> axum::Router {
     .await
     .unwrap();
 
-    build_router(db, std::env::temp_dir().to_string_lossy().into_owned())
+    build_router(db, std::env::temp_dir().to_string_lossy().into_owned(), true)
 }
 
 async fn response_json(response: axum::response::Response) -> Value {
