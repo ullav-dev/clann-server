@@ -1,6 +1,6 @@
 services:
   surrealdb:
-    image: surrealdb/surrealdb:v2
+    image: surrealdb/surrealdb:v3
     restart: unless-stopped
     command:
       - start
@@ -21,6 +21,22 @@ services:
       timeout: 5s
       retries: 5
 
+  migrate:
+    build:
+      context: .
+      dockerfile: scripts/Dockerfile.migrate
+    volumes:
+      - ./migrations:/migrations:ro
+    env_file:
+      - .env.prod
+    secrets:
+      - db_username
+      - db_password
+    depends_on:
+      surrealdb:
+        condition: service_healthy
+    restart: "no"
+
   server:
     build: .
     restart: unless-stopped
@@ -39,6 +55,8 @@ services:
     depends_on:
       surrealdb:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
 volumes:
   surrealdb_data:
