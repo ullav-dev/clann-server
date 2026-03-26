@@ -38,7 +38,7 @@ services:
     restart: "no"
 
   server:
-    build: .
+    image: ghcr.io/ullav-dev/clann-server:latest
     restart: unless-stopped
     ports:
       - "3000:3000"
