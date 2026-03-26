@@ -1,6 +1,8 @@
 services:
   surrealdb:
     image: surrealdb/surrealdb:v3
+    networks:
+      - ullav-net
     restart: unless-stopped
     command:
       - start
@@ -32,13 +34,15 @@ services:
     secrets:
       - db_username
       - db_password
+    networks:
+      - ullav-net
     depends_on:
       surrealdb:
         condition: service_healthy
     restart: "no"
 
   server:
-    build: .
+    image: ghcr.io/ullav-dev/clann-server:latest
     restart: unless-stopped
     ports:
       - "3000:3000"
@@ -50,6 +54,8 @@ services:
     secrets:
       - db_username
       - db_password
+    networks:
+      - ullav-net
     volumes:
       - uploads:/app/uploads
     depends_on:
@@ -61,6 +67,10 @@ services:
 volumes:
   surrealdb_data:
   uploads:
+
+networks:
+  ullav-net:
+    external: true
 
 secrets:
   db_username:

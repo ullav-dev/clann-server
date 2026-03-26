@@ -17,11 +17,16 @@ use crate::{
     openapi::{openapi_json, swagger_ui},
 };
 
-pub fn build_router(db: Db, upload_dir: String) -> Router {
-    Router::new()
-        // API docs
-        .route("/api-docs/openapi.json", get(openapi_json))
-        .route("/swagger-ui", get(swagger_ui))
+pub fn build_router(db: Db, upload_dir: String, enable_docs: bool) -> Router {
+    let mut router = Router::new();
+
+    if enable_docs {
+        router = router
+            .route("/api-docs/openapi.json", get(openapi_json))
+            .route("/swagger-ui", get(swagger_ui));
+    }
+
+    router
         // Family trees
         .route("/api/trees", post(create_tree).get(list_trees))
         .route("/api/trees/{name}", get(get_tree).delete(delete_tree))

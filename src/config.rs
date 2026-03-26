@@ -8,6 +8,7 @@ pub struct Config {
     pub upload_dir: String,
     /// Path to the SurrealDB data file (used when starting SurrealDB with file-backed storage).
     pub db_path: String,
+    pub enable_docs: bool,
 }
 
 impl Config {
@@ -25,6 +26,10 @@ impl Config {
             upload_dir: std::env::var("UPLOAD_DIR").unwrap_or_else(|_| "./uploads".to_string()),
             db_path: std::env::var("DB_PATH")
                 .unwrap_or_else(|_| "/opt/ullav/clann/data.db".to_string()),
+            enable_docs: std::env::var("ENABLE_DOCS")
+                .unwrap_or_else(|_| "true".into())
+                .parse()
+                .unwrap_or(true),
         }
     }
 }
