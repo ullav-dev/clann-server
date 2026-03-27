@@ -3,13 +3,14 @@ set -e
 
 DB_PASSWORD=$(cat /run/secrets/db_password)
 DB_USERNAME=$(cat /run/secrets/db_username)
-CONN="ws://surrealdb:8000"
+WS_CONN="ws://surrealdb:8000"
+HTTP_CONN="http://surrealdb:8000"
 NS="${DB_NAMESPACE:-clann}"
 DB="${DB_DATABASE:-ancestry}"
 
 sql() {
     echo "$1" | surreal sql \
-        --endpoint "$CONN" \
+        --endpoint "$WS_CONN" \
         --user "$DB_USERNAME" \
         --pass "$DB_PASSWORD" \
         --ns "$NS" \
@@ -35,7 +36,7 @@ for file in /migrations/*.surql; do
     else
         echo "Applying $filename..."
         surreal import \
-            --endpoint "$CONN" \
+            --endpoint "$HTTP_CONN" \
             --user "$DB_USERNAME" \
             --pass "$DB_PASSWORD" \
             --ns "$NS" \
