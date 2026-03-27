@@ -1,0 +1,8 @@
+FROM surrealdb/surrealdb:v3 AS surreal
+FROM alpine:3.19
+
+COPY --from=surreal /surreal /usr/local/bin/surreal
+COPY scripts/surrealdb-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh /usr/local/bin/surreal
+
+ENTRYPOINT ["/entrypoint.sh"]
