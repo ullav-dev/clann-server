@@ -3,18 +3,17 @@ set -e
 
 DB_PASSWORD=$(cat /run/secrets/db_password)
 DB_USERNAME=$(cat /run/secrets/db_username)
-CONN="ws://surrealdb:8000"
+BASE_URL="http://surrealdb:8000"
 NS="${DB_NAMESPACE:-clann}"
 DB="${DB_DATABASE:-ancestry}"
 
 sql() {
-    echo "$1" | surreal sql \
-        --endpoint "$CONN" \
-        --user "$DB_USERNAME" \
-        --pass "$DB_PASSWORD" \
-        --ns "$NS" \
-        --db "$DB" \
-        2>/dev/null
+    curl -sf -X POST "$BASE_URL/sql" \
+        -u "$DB_USERNAME:$DB_PASSWORD" \
+        -H "Surreal-NS: $NS" \
+        -H "Surreal-DB: $DB" \
+        -H "Content-Type: text/plain" \
+        --data-raw "$1"
 }
 
 echo "Ensuring migrations tracking table exists..."
@@ -34,13 +33,12 @@ for file in /migrations/*.surql; do
         echo "Skipping $filename (already applied)"
     else
         echo "Applying $filename..."
-        surreal sql \
-            --endpoint "$CONN" \
-            --user "$DB_USERNAME" \
-            --pass "$DB_PASSWORD" \
-            --ns "$NS" \
-            --db "$DB" \
-            < "$file"
+        curl -sf -X POST "$BASE_URL/sql" \
+            -u "$DB_USERNAME:$DB_PASSWORD" \
+            -H "Surreal-NS: $NS" \
+            -H "Surreal-DB: $DB" \
+            -H "Content-Type: text/plain" \
+            --data-binary "@$file"
         sql "CREATE schema_migration SET filename = '$filename', applied_at = time::now();"
         echo "Applied $filename"
     fi

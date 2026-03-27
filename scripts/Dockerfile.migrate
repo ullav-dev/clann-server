@@ -1,9 +1,7 @@
-FROM surrealdb/surrealdb:v3 AS surreal
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y ca-certificates libstdc++6 libgcc-s1 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib/apt/lists/*
 
-COPY --from=surreal /surreal /usr/local/bin/surreal
 COPY scripts/migrate.sh /migrate.sh
 RUN chmod +x /migrate.sh
 
