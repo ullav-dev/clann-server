@@ -9,7 +9,7 @@ DB="${DB_DATABASE:-ancestry}"
 
 sql() {
     echo "$1" | surreal sql \
-        --conn "$CONN" \
+        --endpoint "$CONN" \
         --user "$DB_USERNAME" \
         --pass "$DB_PASSWORD" \
         --ns "$NS" \
@@ -35,7 +35,7 @@ for file in /migrations/*.surql; do
     else
         echo "Applying $filename..."
         surreal import \
-            --conn "$CONN" \
+            --endpoint "$CONN" \
             --user "$DB_USERNAME" \
             --pass "$DB_PASSWORD" \
             --ns "$NS" \
