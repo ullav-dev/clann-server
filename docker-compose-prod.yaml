@@ -1,24 +1,17 @@
 services:
   surrealdb:
-    image: surrealdb/surrealdb:v3
+    build:
+      context: .
+      dockerfile: scripts/Dockerfile.surrealdb
     networks:
       - ullav-net
     restart: unless-stopped
-    command:
-      - start
-      - --user
-      - root
-      - --pass-file
-      - /run/secrets/db_password
-      - --bind
-      - 0.0.0.0:8000
-      - surrealkv:/data/clann.db
     volumes:
       - surrealdb_data:/data
     secrets:
       - db_password
     healthcheck:
-      test: ["CMD", "/surreal", "isready", "--endpoint", "http://localhost:8000"]
+      test: ["CMD", "surreal", "isready", "--endpoint", "http://localhost:8000"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -45,7 +38,7 @@ services:
     image: ghcr.io/ullav-dev/clann-server:latest
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "3001:3001"
     env_file:
       - .env.prod
     environment:

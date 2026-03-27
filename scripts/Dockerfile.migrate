@@ -1,8 +1,7 @@
-# Copy surreal binary from official image into a shell-capable Alpine container
-FROM surrealdb/surrealdb:v3 AS surreal
-FROM alpine:3.19
+FROM debian:bookworm-slim
 
-COPY --from=surreal /surreal /usr/local/bin/surreal
+RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib/apt/lists/*
+
 COPY scripts/migrate.sh /migrate.sh
 RUN chmod +x /migrate.sh
 
