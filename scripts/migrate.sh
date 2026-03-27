@@ -3,14 +3,13 @@ set -e
 
 DB_PASSWORD=$(cat /run/secrets/db_password)
 DB_USERNAME=$(cat /run/secrets/db_username)
-WS_CONN="ws://surrealdb:8000"
-HTTP_CONN="http://surrealdb:8000"
+CONN="ws://surrealdb:8000"
 NS="${DB_NAMESPACE:-clann}"
 DB="${DB_DATABASE:-ancestry}"
 
 sql() {
     echo "$1" | surreal sql \
-        --endpoint "$WS_CONN" \
+        --endpoint "$CONN" \
         --user "$DB_USERNAME" \
         --pass "$DB_PASSWORD" \
         --ns "$NS" \
@@ -35,13 +34,13 @@ for file in /migrations/*.surql; do
         echo "Skipping $filename (already applied)"
     else
         echo "Applying $filename..."
-        surreal import \
-            --endpoint "$HTTP_CONN" \
+        surreal sql \
+            --endpoint "$CONN" \
             --user "$DB_USERNAME" \
             --pass "$DB_PASSWORD" \
             --ns "$NS" \
             --db "$DB" \
-            "$file"
+            < "$file"
         sql "CREATE schema_migration SET filename = '$filename', applied_at = time::now();"
         echo "Applied $filename"
     fi
