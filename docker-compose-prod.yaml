@@ -38,7 +38,7 @@ services:
     image: ghcr.io/ullav-dev/clann-server:latest
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "3001:3001"
     env_file:
       - .env.prod
     environment:
