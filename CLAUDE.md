@@ -43,12 +43,14 @@ src/routes/mod.rs              build_router(db, upload_dir, enable_docs)
 migrations/schema.surql        SurrealDB schema (run at startup via include_str!)
 openapi.json                   committed OpenAPI spec (regenerate with: curl localhost:3000/api-docs/openapi.json)
 tests/api.rs                   integration tests (52 tests)
-Dockerfile                     multi-stage build (rust:1.93-slim → debian:bookworm-slim)
-docker-compose-prod.yml        production compose: surrealdb + migrate + server (all on ullav-net)
-.env.prod                      non-secret env vars for docker-compose (gitignored)
-secrets/                       Docker secret files: db_username.txt, db_password.txt (gitignored)
-scripts/migrate.sh             migration runner — applies .surql files with schema_migration tracking
-scripts/Dockerfile.migrate     alpine + surreal binary for the migrate service
+Dockerfile                         multi-stage build (rust:1.93-slim → debian:trixie-slim)
+docker-compose-prod.yaml           production compose: surrealdb + migrate + server (all on ullav-net)
+.env.prod                          non-secret env vars for docker-compose (gitignored)
+secrets/                           Docker secret files: db_username.txt, db_password.txt (gitignored)
+scripts/migrate.sh                 migration runner — POSTs .surql files to SurrealDB HTTP API with tracking
+scripts/Dockerfile.migrate         debian:bookworm-slim + curl; no surreal binary needed
+scripts/Dockerfile.surrealdb       debian:bookworm-slim + surreal binary; reads secret via entrypoint
+scripts/surrealdb-entrypoint.sh    reads /run/secrets/db_password and starts surreal
 ```
 
 ## Environment variables
@@ -78,6 +80,8 @@ scripts/Dockerfile.migrate     alpine + surreal binary for the migrate service
 - When adding new fields to the schema after the database already exists, restart the server (which re-runs the migration) then backfill existing records: `UPDATE person SET new_field = <value> WHERE new_field = NONE;`
 - Inspect the live schema with `INFO FOR DB;` or `INFO FOR TABLE person;` in the SurrealQL REPL.
 - Migration state in Docker is tracked in the `schema_migration` table (filename + applied_at). `scripts/migrate.sh` skips already-applied files — safe to run on every deploy.
+- **`surreal import` does not work with `surrealkv`** — it uses the backup protocol which that engine doesn't support. Use `POST http://<host>:8000/sql` with `Surreal-NS`/`Surreal-DB` headers and Basic auth instead.
+- The `rust:1.93-slim` builder image is based on Debian trixie (GLIBC 2.40); the runtime must also be trixie or newer — `debian:bookworm-slim` (GLIBC 2.36) is too old.
 
 ## Testing
 

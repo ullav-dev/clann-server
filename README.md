@@ -220,17 +220,18 @@ echo -n "your-strong-password" > secrets/db_password.txt
 Copy `.env.prod` and adjust if needed (no secrets go here):
 
 ```
+ENABLE_DOCS=false
 DB_URL=ws://surrealdb:8000
 DB_NAMESPACE=clann
 DB_DATABASE=ancestry
-PORT=3000
+PORT=3001
 UPLOAD_DIR=/app/uploads
 ```
 
 ### Start
 
 ```bash
-docker compose up -d
+docker compose -f docker-compose-prod.yaml up -d
 ```
 
 Startup order: SurrealDB starts → `migrate` service applies any new `.surql` files → server starts. Applied migrations are tracked in the `schema_migration` table and skipped on subsequent deploys.

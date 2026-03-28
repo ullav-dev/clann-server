@@ -36,6 +36,7 @@ services:
 
   server:
     image: ghcr.io/ullav-dev/clann-server:latest
+    container_name: clann-server
     restart: unless-stopped
     ports:
       - "3001:3001"
