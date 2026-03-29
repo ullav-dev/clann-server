@@ -15,7 +15,10 @@ FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
 
-RUN useradd -ms /bin/bash clann
+RUN useradd -ms /bin/bash clann && \
+    mkdir -p /app/uploads && \
+    chown -R clann:clann /app
+
 USER clann
 WORKDIR /app
 
