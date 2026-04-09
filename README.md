@@ -16,14 +16,11 @@ A REST API server for managing ancestry and family tree data, written in Rust.
 # Install
 curl -sSf https://install.surrealdb.com | sh
 
-# Run (in-memory, data lost on restart)
-surreal start --user root --pass secret memory
-
-# Run with file-backed persistence (recommended)
-surreal start --user root --pass secret surrealkv:${DB_PATH:-/opt/ullav/clann/data.db}
+# Run with persistent file-backed storage (always use this locally)
+surreal start --bind 0.0.0.0:8000 --username root --password secret surrealkv:/opt/ullav/clann/data.db
 ```
 
-> **Note:** SurrealDB v3 uses the `surrealkv:` prefix for file storage, not `file:`.
+> **Note:** SurrealDB v3 uses the `surrealkv:` prefix for file storage, not `file:`. Always use the persistent database path `/opt/ullav/clann/data.db` for local development — never run with `memory` as data will be lost on restart.
 
 Connect to an existing instance with the SQL REPL:
 

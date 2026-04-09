@@ -17,6 +17,17 @@ cargo clippy         # Lint
 cargo fmt            # Format code
 ```
 
+## Running locally
+
+Always start SurrealDB with the persistent database file before running the server:
+
+```bash
+surreal start --bind 0.0.0.0:8000 --username root --password secret surrealkv:/opt/ullav/clann/data.db &
+cargo run
+```
+
+Never use an in-memory or temporary database for local development — use `/opt/ullav/clann/data.db` so changes persist across restarts. (The `mem://` engine is only used by integration tests.)
+
 ## Architecture
 
 - **Web framework**: Axum 0.8 (`{id}` path param syntax, not `:id`)

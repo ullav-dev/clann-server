@@ -70,7 +70,6 @@ pub struct Person {
     /// Whether this person's identity has been verified. Defaults to `false`.
     #[serde(default)]
     pub verified: bool,
-    /// Short biography, up to 1000 characters.
     pub biography: Option<String>,
     /// Identifier of the user who created this record.
     pub created_by: Option<String>,
