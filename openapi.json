@@ -199,7 +199,7 @@
             "Person": {
                 "properties": {
                     "biography": {
-                        "description": "Short biography, up to 1000 characters.",
+                        "description": "Biography (markdown supported).",
                         "type": [
                             "string",
                             "null"
