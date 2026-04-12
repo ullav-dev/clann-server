@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use surrealdb::types::{RecordId, RecordIdKey, SurrealValue};
 use utoipa::ToSchema;
 
-fn serialize_record_id<S: serde::Serializer>(id: &RecordId, s: S) -> Result<S::Ok, S::Error> {
+pub fn serialize_record_id<S: serde::Serializer>(id: &RecordId, s: S) -> Result<S::Ok, S::Error> {
     let key_str = match &id.key {
         RecordIdKey::String(k) => k.clone(),
         other => format!("{other:?}"),
@@ -25,28 +25,6 @@ pub enum EventType {
     Other,
 }
 
-impl EventType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            EventType::Birth => "Birth",
-            EventType::Death => "Death",
-            EventType::Marriage => "Marriage",
-            EventType::Divorce => "Divorce",
-            EventType::Graduation => "Graduation",
-            EventType::Immigration => "Immigration",
-            EventType::Emigration => "Emigration",
-            EventType::Military => "Military",
-            EventType::Other => "Other",
-        }
-    }
-}
-
-impl std::fmt::Display for EventType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize, ToSchema, SurrealValue)]
 pub struct LifeEvent {
     /// Record ID in the form `life_event:<ulid>`.
@@ -54,49 +32,32 @@ pub struct LifeEvent {
     #[serde(serialize_with = "serialize_record_id")]
     pub id: RecordId,
 
-    /// The person this event belongs to, serialised as `person:<ulid>`.
+    /// The person this event belongs to; serialised as `"person:<ulid>"` in JSON.
     #[schema(value_type = String, example = "person:01jd4a8xyz")]
-    pub person_id: String,
+    #[serde(serialize_with = "serialize_record_id")]
+    pub person_id: RecordId,
 
-    /// Short name or title for the event (e.g. "Birth", "Wedding", "Graduated from TCD").
     pub name: String,
-
-    /// Fuzzy date string — free-form, e.g. "1920", "circa 1920", "June 1920", "14 June 1920".
     pub date: Option<String>,
-
     /// Categorises the event. Stored as a plain string; the `EventType` enum
     /// lists common values but callers may supply any string.
     pub event_type: String,
-
-    /// Narrative description (plain text, short).
     pub description: Option<String>,
-
     /// Long-form story written in Markdown; may include embedded DAM images.
     pub story: Option<String>,
-
-    /// Whether this event has been verified against primary sources.
     #[serde(default)]
     pub verified: bool,
-
-    /// External URL pointing to a source document or webpage.
     pub source_link: Option<String>,
-
-    /// DAM asset path/URL for a source image (e.g. scan of a birth certificate).
     pub source_image: Option<String>,
-
-    /// DAM asset path/URL for a source document (e.g. a PDF scan).
     pub source_doc: Option<String>,
-
-    /// The user who created this record.
     pub created_by: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateLifeEvent {
     pub name: String,
-    pub date: Option<String>,
-    /// Event type string. Use one of the `EventType` enum values or any custom string.
     pub event_type: String,
+    pub date: Option<String>,
     pub description: Option<String>,
     pub story: Option<String>,
     #[serde(default)]

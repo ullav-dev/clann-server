@@ -15,22 +15,32 @@ use crate::{
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct LifeEventFilter {
-    /// Filter by the user who created the events.
     pub created_by: Option<String>,
+}
+
+/// Check person exists using count() — avoids returning a record-typed `id`
+/// field into serde_json::Value (which would fail with "Expected any, got record").
+async fn person_exists(db: &crate::db::DbConn, person_rid: RecordId) -> Result<bool, AppError> {
+    let result: Option<serde_json::Value> = db
+        .query("SELECT count() AS n FROM person WHERE id = $pid GROUP ALL")
+        .bind(("pid", person_rid))
+        .await?
+        .take(0)?;
+    Ok(result
+        .and_then(|v| v.get("n").and_then(|x| x.as_u64()))
+        .unwrap_or(0) > 0)
 }
 
 #[utoipa::path(
     post,
     path = "/api/persons/{id}/life-events",
-    params(
-        ("id" = String, Path, description = "Person record ID (without the `person:` prefix)")
-    ),
+    params(("id" = String, Path, description = "Person ULID")),
     request_body = CreateLifeEvent,
     responses(
-        (status = 201, description = "Life event created", body = LifeEvent),
-        (status = 400, description = "Bad request", body = ErrorResponse),
-        (status = 401, description = "Unauthorized", body = ErrorResponse),
-        (status = 404, description = "Person not found", body = ErrorResponse),
+        (status = 201, body = LifeEvent),
+        (status = 400, body = ErrorResponse),
+        (status = 401, body = ErrorResponse),
+        (status = 404, body = ErrorResponse),
     ),
     tag = "life-events"
 )]
@@ -41,25 +51,46 @@ pub async fn create_life_event(
     Json(payload): Json<CreateLifeEvent>,
 ) -> Result<(StatusCode, Json<LifeEvent>), AppError> {
     let db = db.lock().await;
-
-    // Verify the person exists
     let person_rid = RecordId::new("person", person_id.as_str());
-    let person_exists: Option<serde_json::Value> = db
-        .query("SELECT id FROM person WHERE id = $pid LIMIT 1")
-        .bind(("pid", person_rid))
-        .await?
-        .take(0)?;
-    if person_exists.is_none() {
+
+    if !person_exists(&db, person_rid.clone()).await? {
         return Err(AppError::NotFound);
     }
 
-    let person_id_str = format!("person:{}", person_id);
-    let mut body = serde_json::to_value(&payload)
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    body["person_id"] = serde_json::json!(person_id_str);
+    // Use a query string so we can bind person_rid as RecordId (keeping the
+    // record<person> type in the DB) and get Vec<LifeEvent> back via SurrealValue.
+    let events: Vec<LifeEvent> = db
+        .query(
+            "CREATE life_event SET \
+             person_id   = $pid, \
+             name        = $name, \
+             date        = $date, \
+             event_type  = $et, \
+             description = $desc, \
+             story       = $story, \
+             verified    = $verified, \
+             source_link = $sl, \
+             source_image = $si, \
+             source_doc  = $sd, \
+             created_by  = $creator",
+        )
+        .bind(("pid",     person_rid))
+        .bind(("name",    payload.name))
+        .bind(("date",    payload.date))
+        .bind(("et",      payload.event_type))
+        .bind(("desc",    payload.description))
+        .bind(("story",   payload.story))
+        .bind(("verified",payload.verified))
+        .bind(("sl",      payload.source_link))
+        .bind(("si",      payload.source_image))
+        .bind(("sd",      payload.source_doc))
+        .bind(("creator", payload.created_by))
+        .await?
+        .take(0)?;
 
-    let event: Option<LifeEvent> = db.create("life_event").content(body).await?;
-    event
+    events
+        .into_iter()
+        .next()
         .map(|e| (StatusCode::CREATED, Json(e)))
         .ok_or_else(|| AppError::BadRequest("Failed to create life event".to_string()))
 }
@@ -67,14 +98,11 @@ pub async fn create_life_event(
 #[utoipa::path(
     get,
     path = "/api/persons/{id}/life-events",
-    params(
-        ("id" = String, Path, description = "Person record ID (without the `person:` prefix)"),
-        LifeEventFilter
-    ),
+    params(("id" = String, Path, description = "Person ULID"), LifeEventFilter),
     responses(
-        (status = 200, description = "List of life events for the person", body = Vec<LifeEvent>),
-        (status = 401, description = "Unauthorized", body = ErrorResponse),
-        (status = 404, description = "Person not found", body = ErrorResponse),
+        (status = 200, body = Vec<LifeEvent>),
+        (status = 401, body = ErrorResponse),
+        (status = 404, body = ErrorResponse),
     ),
     tag = "life-events"
 )]
@@ -85,30 +113,23 @@ pub async fn list_life_events(
     Query(filter): Query<LifeEventFilter>,
 ) -> Result<Json<Vec<LifeEvent>>, AppError> {
     let db = db.lock().await;
-
-    // Verify person exists
     let person_rid = RecordId::new("person", person_id.as_str());
-    let person_exists: Option<serde_json::Value> = db
-        .query("SELECT id FROM person WHERE id = $pid LIMIT 1")
-        .bind(("pid", person_rid))
-        .await?
-        .take(0)?;
-    if person_exists.is_none() {
+
+    if !person_exists(&db, person_rid.clone()).await? {
         return Err(AppError::NotFound);
     }
 
-    let person_id_str = format!("person:{}", person_id);
     let events: Vec<LifeEvent> = if let Some(creator) = filter.created_by {
         db.query(
             "SELECT * FROM life_event WHERE person_id = $pid AND created_by = $creator ORDER BY date ASC",
         )
-        .bind(("pid", person_id_str))
+        .bind(("pid", person_rid))
         .bind(("creator", creator))
         .await?
         .take(0)?
     } else {
         db.query("SELECT * FROM life_event WHERE person_id = $pid ORDER BY date ASC")
-            .bind(("pid", person_id_str))
+            .bind(("pid", person_rid))
             .await?
             .take(0)?
     };
@@ -119,13 +140,11 @@ pub async fn list_life_events(
 #[utoipa::path(
     get,
     path = "/api/life-events/{event_id}",
-    params(
-        ("event_id" = String, Path, description = "Life event ID (without the `life_event:` prefix)")
-    ),
+    params(("event_id" = String, Path, description = "Life event ULID")),
     responses(
-        (status = 200, description = "Life event", body = LifeEvent),
-        (status = 401, description = "Unauthorized", body = ErrorResponse),
-        (status = 404, description = "Not found", body = ErrorResponse),
+        (status = 200, body = LifeEvent),
+        (status = 401, body = ErrorResponse),
+        (status = 404, body = ErrorResponse),
     ),
     tag = "life-events"
 )]
@@ -135,7 +154,6 @@ pub async fn get_life_event(
     Path(event_id): Path<String>,
 ) -> Result<Json<LifeEvent>, AppError> {
     let db = db.lock().await;
-
     let eid = RecordId::new("life_event", event_id.as_str());
     let event: Option<LifeEvent> = db.select(eid).await?;
     event.map(Json).ok_or(AppError::NotFound)
@@ -144,15 +162,13 @@ pub async fn get_life_event(
 #[utoipa::path(
     put,
     path = "/api/life-events/{event_id}",
-    params(
-        ("event_id" = String, Path, description = "Life event ID (without the `life_event:` prefix)")
-    ),
+    params(("event_id" = String, Path, description = "Life event ULID")),
     request_body = UpdateLifeEvent,
     responses(
-        (status = 200, description = "Updated life event", body = LifeEvent),
-        (status = 400, description = "Bad request", body = ErrorResponse),
-        (status = 401, description = "Unauthorized", body = ErrorResponse),
-        (status = 404, description = "Not found", body = ErrorResponse),
+        (status = 200, body = LifeEvent),
+        (status = 400, body = ErrorResponse),
+        (status = 401, body = ErrorResponse),
+        (status = 404, body = ErrorResponse),
     ),
     tag = "life-events"
 )]
@@ -163,7 +179,6 @@ pub async fn update_life_event(
     Json(payload): Json<UpdateLifeEvent>,
 ) -> Result<Json<LifeEvent>, AppError> {
     let db = db.lock().await;
-
     let eid = RecordId::new("life_event", event_id.as_str());
 
     let existing: Option<LifeEvent> = db.select(eid.clone()).await?;
@@ -180,13 +195,11 @@ pub async fn update_life_event(
 #[utoipa::path(
     delete,
     path = "/api/life-events/{event_id}",
-    params(
-        ("event_id" = String, Path, description = "Life event ID (without the `life_event:` prefix)")
-    ),
+    params(("event_id" = String, Path, description = "Life event ULID")),
     responses(
         (status = 204, description = "Deleted"),
-        (status = 401, description = "Unauthorized", body = ErrorResponse),
-        (status = 404, description = "Not found", body = ErrorResponse),
+        (status = 401, body = ErrorResponse),
+        (status = 404, body = ErrorResponse),
     ),
     tag = "life-events"
 )]
@@ -196,13 +209,11 @@ pub async fn delete_life_event(
     Path(event_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
     let db = db.lock().await;
-
     let eid = RecordId::new("life_event", event_id.as_str());
     let existing: Option<LifeEvent> = db.select(eid.clone()).await?;
     if existing.is_none() {
         return Err(AppError::NotFound);
     }
-
     let _: Option<LifeEvent> = db.delete(eid).await?;
     Ok(StatusCode::NO_CONTENT)
 }
