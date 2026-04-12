@@ -68,6 +68,28 @@ All configuration is via environment variables:
 | `UPLOAD_DIR`        | `./uploads`                | Directory for person image files                                      |
 | `DB_PATH`           | `/opt/ullav/clann/data.db` | SurrealDB data file path for persistent storage                       |
 | `ENABLE_DOCS`       | `true`                     | Set to `false` to disable Swagger UI and OpenAPI spec endpoints       |
+| `JWT_SECRET`        | —                          | When set, all requests must include a valid `Authorization: Bearer <jwt>`. Omit to disable auth enforcement. |
+
+## Authentication
+
+All API routes require a valid JWT when `JWT_SECRET` is configured. Pass the token issued by `ullav-user-management` in the `Authorization` header:
+
+```
+Authorization: Bearer <token>
+```
+
+The token must include a `subscriptions.clann` claim to unlock plan tiers. Missing or inactive subscriptions default to the `individual` tier.
+
+### Subscription tiers
+
+| Tier           | Max trees | Max persons |
+|----------------|-----------|-------------|
+| `individual`   | 2         | 100         |
+| `family`       | 10        | 1,000       |
+| `professional` | unlimited | unlimited   |
+| `enterprise`   | unlimited | unlimited   |
+
+Exceeding a limit returns `403 Forbidden`. When `JWT_SECRET` is not set, auth is skipped (useful for local dev and integration tests).
 
 ## API
 
