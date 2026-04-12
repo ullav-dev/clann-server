@@ -9,6 +9,7 @@ use surrealdb::{
 };
 
 use crate::config::Config;
+use crate::models::life_event::LifeEvent;
 use crate::models::person::Person;
 
 pub type DbConn = Surreal<Any>;
@@ -84,35 +85,38 @@ async fn seed_life_events(db: &DbConn) -> anyhow::Result<()> {
 
         if p.date_of_birth.is_some() || p.place_of_birth.is_some() {
             if !life_event_exists(db, pid.clone(), "Birth").await? {
-                // Fire-and-forget: no .take() so no deserialization of the returned record.
-                db.query(
-                    "CREATE life_event SET \
-                     person_id = $pid, name = 'Birth', date = $date, \
-                     event_type = 'Birth', description = $desc, \
-                     verified = false, created_by = $creator",
-                )
-                .bind(("pid",     pid.clone()))
-                .bind(("date",    p.date_of_birth.clone()))
-                .bind(("desc",    p.place_of_birth.clone()))
-                .bind(("creator", p.created_by.clone()))
-                .await?;
+                let _: Vec<LifeEvent> = db
+                    .query(
+                        "CREATE life_event SET \
+                         person_id = $pid, name = 'Birth', date = $date, \
+                         event_type = 'Birth', description = $desc, \
+                         verified = false, created_by = $creator",
+                    )
+                    .bind(("pid",     pid.clone()))
+                    .bind(("date",    p.date_of_birth.clone()))
+                    .bind(("desc",    p.place_of_birth.clone()))
+                    .bind(("creator", p.created_by.clone()))
+                    .await?
+                    .take(0)?;
                 seeded += 1;
             }
         }
 
         if p.date_of_death.is_some() || p.place_of_death.is_some() {
             if !life_event_exists(db, pid.clone(), "Death").await? {
-                db.query(
-                    "CREATE life_event SET \
-                     person_id = $pid, name = 'Death', date = $date, \
-                     event_type = 'Death', description = $desc, \
-                     verified = false, created_by = $creator",
-                )
-                .bind(("pid",     pid.clone()))
-                .bind(("date",    p.date_of_death.clone()))
-                .bind(("desc",    p.place_of_death.clone()))
-                .bind(("creator", p.created_by.clone()))
-                .await?;
+                let _: Vec<LifeEvent> = db
+                    .query(
+                        "CREATE life_event SET \
+                         person_id = $pid, name = 'Death', date = $date, \
+                         event_type = 'Death', description = $desc, \
+                         verified = false, created_by = $creator",
+                    )
+                    .bind(("pid",     pid.clone()))
+                    .bind(("date",    p.date_of_death.clone()))
+                    .bind(("desc",    p.place_of_death.clone()))
+                    .bind(("creator", p.created_by.clone()))
+                    .await?
+                    .take(0)?;
                 seeded += 1;
             }
         }
@@ -155,16 +159,18 @@ async fn seed_life_events(db: &DbConn) -> anyhow::Result<()> {
                 format!("Marriage to {}", partner_name)
             };
 
-            db.query(
-                "CREATE life_event SET \
-                 person_id = $pid, name = $name, date = $date, \
-                 event_type = 'Marriage', verified = false, created_by = $creator",
-            )
-            .bind(("pid",     pid_a))
-            .bind(("name",    event_name))
-            .bind(("date",    spouse_from))
-            .bind(("creator", created_by))
-            .await?;
+            let _: Vec<LifeEvent> = db
+                .query(
+                    "CREATE life_event SET \
+                     person_id = $pid, name = $name, date = $date, \
+                     event_type = 'Marriage', verified = false, created_by = $creator",
+                )
+                .bind(("pid",     pid_a))
+                .bind(("name",    event_name))
+                .bind(("date",    spouse_from))
+                .bind(("creator", created_by))
+                .await?
+                .take(0)?;
             seeded += 1;
         }
     }
