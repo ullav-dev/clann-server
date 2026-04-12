@@ -222,6 +222,48 @@ curl -X PATCH http://localhost:3000/api/persons/{id}/spouse-dates/person:{spouse
   -d '{"spouse_from": "1995-06-10", "spouse_to": "2010-03-01"}'
 ```
 
+### Life Events
+
+Life events record significant occurrences in a person's life (Birth, Death, Marriage, Graduation, Military service, etc.).
+
+| Method   | Path                                  | Description                                      |
+|----------|---------------------------------------|--------------------------------------------------|
+| `POST`   | `/api/persons/{id}/life-events`       | Create a life event for a person                 |
+| `GET`    | `/api/persons/{id}/life-events`       | List all life events for a person (ordered by date ASC) |
+| `GET`    | `/api/life-events/{event_id}`         | Get a single life event                          |
+| `PUT`    | `/api/life-events/{event_id}`         | Replace a life event (MERGE semantics)           |
+| `DELETE` | `/api/life-events/{event_id}`         | Delete a life event                              |
+
+**Life event fields:**
+
+| Field          | Required | Description                                                               |
+|----------------|----------|---------------------------------------------------------------------------|
+| `name`         | yes      | Short title for the event                                                 |
+| `event_type`   | yes      | One of `Birth`, `Death`, `Marriage`, `Graduation`, `Military`, `Immigration`, `Emigration`, `Other` |
+| `date`         | no       | ISO 8601 or free-form date string                                         |
+| `description`  | no       | Brief summary                                                             |
+| `story`        | no       | Long-form narrative                                                        |
+| `verified`     | no       | Boolean, defaults to `false`                                              |
+| `source_link`  | no       | URL to an external source                                                 |
+| `source_image` | no       | Path or URL to a supporting image                                         |
+| `source_doc`   | no       | Path or URL to a supporting document                                      |
+| `created_by`   | no       | Identifier of the creator                                                 |
+
+```bash
+# Create a birth event
+curl -X POST http://localhost:3000/api/persons/{id}/life-events \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Born in Dublin", "event_type": "Birth", "date": "1920-03-15"}'
+
+# List life events for a person
+curl http://localhost:3000/api/persons/{id}/life-events
+
+# Update a life event
+curl -X PUT http://localhost:3000/api/life-events/{event_id} \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Born in Dublin", "event_type": "Birth", "date": "1920-03-15", "description": "Born at the Rotunda Hospital"}'
+```
+
 ## Production deployment
 
 The server is distributed as a Docker image at `ghcr.io/ullav-dev/clann-server:latest`.
