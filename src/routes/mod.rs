@@ -10,6 +10,7 @@ use crate::{
     handlers::{
         family_tree::{create_tree, delete_tree, get_tree, list_trees, set_primary_tree},
         image::{get_image, get_life_image, upload_image, upload_life_image},
+        life_event::{create_life_event, delete_life_event, get_life_event, list_life_events, update_life_event},
         person::{add_person_to_tree, create_person, delete_person, get_person, list_persons, remove_person_from_tree, update_person},
         relationship::{
             add_relationship, delete_relationship, get_family_tree, get_relationships,
@@ -69,6 +70,15 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
         .route(
             "/api/persons/{id}/spouse-dates/{related_id}",
             patch(update_spouse_dates),
+        )
+        // Life Events
+        .route(
+            "/api/persons/{id}/life-events",
+            post(create_life_event).get(list_life_events),
+        )
+        .route(
+            "/api/life-events/{event_id}",
+            get(get_life_event).put(update_life_event).delete(delete_life_event),
         )
         .layer(auth_layer)
         .layer(Extension(upload_dir))

@@ -43,6 +43,55 @@ pub async fn connect(config: &Config) -> anyhow::Result<Db> {
     // Backfill: migrate single `tree` string to `trees` array for existing records.
     db.query("UPDATE person SET trees = [tree] WHERE tree != NONE AND (trees = NONE OR trees = [])").await?;
 
+    // Seed life events from existing person birth/death/marriage data.
+    // Each query only creates an event if one doesn't already exist for that person+type.
+    db.query(
+        "FOR $p IN (SELECT * FROM person WHERE date_of_birth != NONE OR place_of_birth != NONE) {
+            IF (SELECT count() FROM life_event WHERE person_id = $p.id AND event_type = 'Birth' GROUP ALL)[0].count = 0 {
+                CREATE life_event SET
+                    person_id   = $p.id,
+                    name        = 'Birth',
+                    date        = $p.date_of_birth,
+                    event_type  = 'Birth',
+                    description = $p.place_of_birth,
+                    verified    = false,
+                    created_by  = $p.created_by;
+            };
+        };"
+    ).await?;
+
+    db.query(
+        "FOR $p IN (SELECT * FROM person WHERE date_of_death != NONE OR place_of_death != NONE) {
+            IF (SELECT count() FROM life_event WHERE person_id = $p.id AND event_type = 'Death' GROUP ALL)[0].count = 0 {
+                CREATE life_event SET
+                    person_id   = $p.id,
+                    name        = 'Death',
+                    date        = $p.date_of_death,
+                    event_type  = 'Death',
+                    description = $p.place_of_death,
+                    verified    = false,
+                    created_by  = $p.created_by;
+            };
+        };"
+    ).await?;
+
+    // Seed Marriage events from has_spouse edges (one event per unique pair).
+    db.query(
+        "FOR $e IN (SELECT *, in AS person_a, out AS person_b FROM has_spouse WHERE in < out) {
+            LET $name_a = (SELECT string::concat(first_name, ' ', family_name) AS full FROM person WHERE id = $e.person_a LIMIT 1)[0].full;
+            LET $name_b = (SELECT string::concat(first_name, ' ', family_name) AS full FROM person WHERE id = $e.person_b LIMIT 1)[0].full;
+            IF (SELECT count() FROM life_event WHERE person_id = $e.person_a AND event_type = 'Marriage' AND name = string::concat('Marriage to ', $name_b ?? '') GROUP ALL)[0].count = 0 {
+                CREATE life_event SET
+                    person_id   = $e.person_a,
+                    name        = string::concat('Marriage to ', $name_b ?? 'unknown'),
+                    date        = $e.spouse_from,
+                    event_type  = 'Marriage',
+                    verified    = false,
+                    created_by  = (SELECT created_by FROM person WHERE id = $e.person_a LIMIT 1)[0].created_by;
+            };
+        };"
+    ).await?;
+
     tracing::info!("Connected to SurrealDB at {}", config.db_url);
 
     Ok(Arc::new(Mutex::new(db)))
