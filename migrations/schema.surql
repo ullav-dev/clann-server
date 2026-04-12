@@ -31,7 +31,9 @@ DEFINE INDEX IF NOT EXISTS idx_person_trees ON TABLE person COLUMNS trees;
 
 -- Life Events
 DEFINE TABLE IF NOT EXISTS life_event SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS person_id    ON TABLE life_event TYPE record<person>;
+-- person_id stored as plain string ("person:<ulid>") to avoid record-type
+-- deserialisation issues with the SurrealDB Rust client.
+DEFINE FIELD person_id    ON TABLE life_event TYPE string;
 DEFINE FIELD IF NOT EXISTS name         ON TABLE life_event TYPE string;
 DEFINE FIELD IF NOT EXISTS date         ON TABLE life_event TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS event_type   ON TABLE life_event TYPE string;
