@@ -10,16 +10,6 @@ fn serialize_record_id<S: serde::Serializer>(id: &RecordId, s: S) -> Result<S::O
     s.serialize_str(&format!("{}:{}", id.table, key_str))
 }
 
-fn serialize_opt_record_id<S: serde::Serializer>(
-    id: &Option<RecordId>,
-    s: S,
-) -> Result<S::Ok, S::Error> {
-    match id {
-        Some(rid) => serialize_record_id(rid, s),
-        None => s.serialize_none(),
-    }
-}
-
 /// Common life event types. Stored as a plain string so callers can supply
 /// arbitrary values beyond this list.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq)]
@@ -64,10 +54,9 @@ pub struct LifeEvent {
     #[serde(serialize_with = "serialize_record_id")]
     pub id: RecordId,
 
-    /// The person this event belongs to (`person:<ulid>`).
+    /// The person this event belongs to, serialised as `person:<ulid>`.
     #[schema(value_type = String, example = "person:01jd4a8xyz")]
-    #[serde(serialize_with = "serialize_record_id")]
-    pub person_id: RecordId,
+    pub person_id: String,
 
     /// Short name or title for the event (e.g. "Birth", "Wedding", "Graduated from TCD").
     pub name: String,
@@ -104,14 +93,6 @@ pub struct LifeEvent {
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateLifeEvent {
-    /// The person this event belongs to (`person:<ulid>`).
-    #[schema(value_type = String, example = "person:01jd4a8xyz")]
-    #[serde(
-        serialize_with = "serialize_opt_record_id",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub person_id: Option<RecordId>,
-
     pub name: String,
     pub date: Option<String>,
     /// Event type string. Use one of the `EventType` enum values or any custom string.
