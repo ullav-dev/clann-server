@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     http::StatusCode,
     Json,
 };
@@ -7,6 +7,7 @@ use serde::Deserialize;
 use surrealdb::types::RecordId;
 
 use crate::{
+    auth::ClannAuth,
     db::Db,
     error::{AppError, ErrorResponse},
     models::{family_tree::FamilyTree, person::{CreatePerson, Person, TreeMembershipRequest, UpdatePerson}},
@@ -51,12 +52,27 @@ pub fn check_ownership(person: &Person, created_by: &Option<String>) -> Result<(
 )]
 pub async fn create_person(
     State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
     Json(payload): Json<CreatePerson>,
 ) -> Result<(StatusCode, Json<Person>), AppError> {
     let db = db.lock().await;
 
     if payload.trees.is_empty() {
         return Err(AppError::BadRequest("At least one tree must be specified".to_string()));
+    }
+
+    // Enforce subscription member limit (total members created by this user)
+    if let (Some(limit), Some(ref creator)) = (auth.member_limit(), &payload.created_by) {
+        let existing: Vec<Person> = db
+            .query("SELECT * FROM person WHERE created_by = $creator")
+            .bind(("creator", creator.clone()))
+            .await?
+            .take(0)?;
+        if existing.len() >= limit {
+            return Err(AppError::Forbidden(format!(
+                "Member limit of {limit} reached for your plan. Upgrade to add more people."
+            )));
+        }
     }
 
     // Validate all specified trees exist

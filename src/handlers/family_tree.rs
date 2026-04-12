@@ -1,11 +1,12 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     http::StatusCode,
     Json,
 };
 use serde::Deserialize;
 
 use crate::{
+    auth::ClannAuth,
     db::Db,
     error::{AppError, ErrorResponse},
     models::family_tree::{CreateFamilyTree, FamilyTree},
@@ -29,9 +30,24 @@ pub struct TreeFilter {
 )]
 pub async fn create_tree(
     State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
     Json(payload): Json<CreateFamilyTree>,
 ) -> Result<(StatusCode, Json<FamilyTree>), AppError> {
     let db = db.lock().await;
+
+    // Enforce subscription tree limit
+    if let Some(limit) = auth.tree_limit() {
+        let existing: Vec<FamilyTree> = db
+            .query("SELECT * FROM family_tree WHERE owner = $owner")
+            .bind(("owner", payload.owner.clone()))
+            .await?
+            .take(0)?;
+        if existing.len() >= limit {
+            return Err(AppError::Forbidden(format!(
+                "Tree limit of {limit} reached for your plan. Upgrade to create more trees."
+            )));
+        }
+    }
 
     // Enforce unique name
     let existing: Option<FamilyTree> = db
