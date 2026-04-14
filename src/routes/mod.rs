@@ -1,13 +1,16 @@
 use axum::{
+    middleware,
     routing::{delete, get, patch, post},
     Extension, Router,
 };
 
 use crate::{
+    auth::jwt_middleware,
     db::Db,
     handlers::{
         family_tree::{create_tree, delete_tree, get_tree, list_trees, set_primary_tree},
         image::{get_image, get_life_image, upload_image, upload_life_image},
+        life_event::{create_life_event, delete_life_event, get_life_event, list_life_events, update_life_event},
         person::{add_person_to_tree, create_person, delete_person, get_person, list_persons, remove_person_from_tree, update_person},
         relationship::{
             add_relationship, delete_relationship, get_family_tree, get_relationships,
@@ -17,7 +20,7 @@ use crate::{
     openapi::{openapi_json, swagger_ui},
 };
 
-pub fn build_router(db: Db, upload_dir: String, enable_docs: bool) -> Router {
+pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: Option<String>) -> Router {
     let mut router = Router::new();
 
     if enable_docs {
@@ -25,6 +28,12 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool) -> Router {
             .route("/api-docs/openapi.json", get(openapi_json))
             .route("/swagger-ui", get(swagger_ui));
     }
+
+    let secret = jwt_secret;
+    let auth_layer = middleware::from_fn(move |req, next| {
+        let secret = secret.clone();
+        async move { jwt_middleware(req, next, secret).await }
+    });
 
     router
         // Family trees
@@ -62,6 +71,16 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool) -> Router {
             "/api/persons/{id}/spouse-dates/{related_id}",
             patch(update_spouse_dates),
         )
+        // Life Events
+        .route(
+            "/api/persons/{id}/life-events",
+            post(create_life_event).get(list_life_events),
+        )
+        .route(
+            "/api/life-events/{event_id}",
+            get(get_life_event).put(update_life_event).delete(delete_life_event),
+        )
+        .layer(auth_layer)
         .layer(Extension(upload_dir))
         .with_state(db)
 }

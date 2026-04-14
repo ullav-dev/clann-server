@@ -5,6 +5,7 @@ use crate::{
     error::ErrorResponse,
     models::{
         family_tree::{CreateFamilyTree, FamilyTree},
+        life_event::{CreateLifeEvent, EventType, LifeEvent, UpdateLifeEvent},
         person::{CreatePerson, Person, Sex, UpdatePerson},
         relationship::{AddRelationshipRequest, RelationshipType, RelationshipsResponse, SiblingType},
     },
@@ -35,6 +36,11 @@ use crate::{
         crate::handlers::relationship::delete_relationship,
         crate::handlers::relationship::get_family_tree,
         crate::handlers::relationship::update_spouse_dates,
+        crate::handlers::life_event::create_life_event,
+        crate::handlers::life_event::list_life_events,
+        crate::handlers::life_event::get_life_event,
+        crate::handlers::life_event::update_life_event,
+        crate::handlers::life_event::delete_life_event,
     ),
     components(
         schemas(
@@ -44,6 +50,7 @@ use crate::{
             SiblingType, RelationshipType,
             crate::models::relationship::SpouseInfo,
             crate::models::relationship::UpdateSpouseDatesRequest,
+            LifeEvent, CreateLifeEvent, UpdateLifeEvent, EventType,
             ErrorResponse,
         )
     ),
@@ -51,6 +58,7 @@ use crate::{
         (name = "trees",         description = "Create, read and delete family trees"),
         (name = "persons",       description = "Create, read, update and delete person records"),
         (name = "relationships", description = "Manage family relationships and traverse the family tree"),
+        (name = "life-events",   description = "Create, read, update and delete life events for persons"),
     )
 )]
 pub struct ApiDoc;

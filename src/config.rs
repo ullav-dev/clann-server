@@ -9,6 +9,9 @@ pub struct Config {
     /// Path to the SurrealDB data file (used when starting SurrealDB with file-backed storage).
     pub db_path: String,
     pub enable_docs: bool,
+    /// When set, all API requests must include a valid `Authorization: Bearer <jwt>`.
+    /// Omit in development/test environments to skip auth enforcement.
+    pub jwt_secret: Option<String>,
 }
 
 impl Config {
@@ -30,6 +33,7 @@ impl Config {
                 .unwrap_or_else(|_| "true".into())
                 .parse()
                 .unwrap_or(true),
+            jwt_secret: std::env::var("JWT_SECRET").ok(),
         }
     }
 }

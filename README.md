@@ -68,6 +68,28 @@ All configuration is via environment variables:
 | `UPLOAD_DIR`        | `./uploads`                | Directory for person image files                                      |
 | `DB_PATH`           | `/opt/ullav/clann/data.db` | SurrealDB data file path for persistent storage                       |
 | `ENABLE_DOCS`       | `true`                     | Set to `false` to disable Swagger UI and OpenAPI spec endpoints       |
+| `JWT_SECRET`        | —                          | When set, all requests must include a valid `Authorization: Bearer <jwt>`. Omit to disable auth enforcement. |
+
+## Authentication
+
+All API routes require a valid JWT when `JWT_SECRET` is configured. Pass the token issued by `ullav-user-management` in the `Authorization` header:
+
+```
+Authorization: Bearer <token>
+```
+
+The token must include a `subscriptions.clann` claim to unlock plan tiers. Missing or inactive subscriptions default to the `individual` tier.
+
+### Subscription tiers
+
+| Tier           | Max trees | Max persons |
+|----------------|-----------|-------------|
+| `individual`   | 2         | 100         |
+| `family`       | 10        | 1,000       |
+| `professional` | unlimited | unlimited   |
+| `enterprise`   | unlimited | unlimited   |
+
+Exceeding a limit returns `403 Forbidden`. When `JWT_SECRET` is not set, auth is skipped (useful for local dev and integration tests).
 
 ## API
 
@@ -198,6 +220,48 @@ curl -X POST http://localhost:3000/api/persons/{id}/relationships \
 curl -X PATCH http://localhost:3000/api/persons/{id}/spouse-dates/person:{spouse_id} \
   -H 'Content-Type: application/json' \
   -d '{"spouse_from": "1995-06-10", "spouse_to": "2010-03-01"}'
+```
+
+### Life Events
+
+Life events record significant occurrences in a person's life (Birth, Death, Marriage, Graduation, Military service, etc.).
+
+| Method   | Path                                  | Description                                      |
+|----------|---------------------------------------|--------------------------------------------------|
+| `POST`   | `/api/persons/{id}/life-events`       | Create a life event for a person                 |
+| `GET`    | `/api/persons/{id}/life-events`       | List all life events for a person (ordered by date ASC) |
+| `GET`    | `/api/life-events/{event_id}`         | Get a single life event                          |
+| `PUT`    | `/api/life-events/{event_id}`         | Replace a life event (MERGE semantics)           |
+| `DELETE` | `/api/life-events/{event_id}`         | Delete a life event                              |
+
+**Life event fields:**
+
+| Field          | Required | Description                                                               |
+|----------------|----------|---------------------------------------------------------------------------|
+| `name`         | yes      | Short title for the event                                                 |
+| `event_type`   | yes      | One of `Birth`, `Death`, `Marriage`, `Graduation`, `Military`, `Immigration`, `Emigration`, `Other` |
+| `date`         | no       | ISO 8601 or free-form date string                                         |
+| `description`  | no       | Brief summary                                                             |
+| `story`        | no       | Long-form narrative                                                        |
+| `verified`     | no       | Boolean, defaults to `false`                                              |
+| `source_link`  | no       | URL to an external source                                                 |
+| `source_image` | no       | Path or URL to a supporting image                                         |
+| `source_doc`   | no       | Path or URL to a supporting document                                      |
+| `created_by`   | no       | Identifier of the creator                                                 |
+
+```bash
+# Create a birth event
+curl -X POST http://localhost:3000/api/persons/{id}/life-events \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Born in Dublin", "event_type": "Birth", "date": "1920-03-15"}'
+
+# List life events for a person
+curl http://localhost:3000/api/persons/{id}/life-events
+
+# Update a life event
+curl -X PUT http://localhost:3000/api/life-events/{event_id} \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Born in Dublin", "event_type": "Birth", "date": "1920-03-15", "description": "Born at the Rotunda Hospital"}'
 ```
 
 ## Production deployment

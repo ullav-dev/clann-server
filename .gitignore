@@ -24,3 +24,4 @@ uploads/
 .env
 .env.prod
 secrets/
+.DS_Store

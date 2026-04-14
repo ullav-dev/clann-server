@@ -4,6 +4,8 @@ use axum::{
 };
 use clann_server::{db::Db, routes::build_router};
 use http_body_util::BodyExt;
+use jsonwebtoken::{encode, EncodingKey, Header};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::{atomic::{AtomicU64, Ordering}, Arc};
 use surrealdb::{engine::any, opt::auth::Root};
@@ -13,6 +15,91 @@ use tower::ServiceExt;
 static DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const TEST_TREE: &str = "test-tree";
+const TEST_JWT_SECRET: &str = "test-secret";
+
+// ── JWT token builder ─────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct TestClaims {
+    sub: String,
+    exp: u64,
+    subscriptions: Value,
+}
+
+/// Build a signed JWT with the given Clann subscription tier and status.
+/// Uses `TEST_JWT_SECRET` as the signing key.
+fn make_clann_jwt(tier: &str, status: &str) -> String {
+    let claims = TestClaims {
+        sub: "test-user-id".to_string(),
+        exp: 9_999_999_999,
+        subscriptions: json!({ "clann": { "tier": tier, "status": status } }),
+    };
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+    )
+    .unwrap()
+}
+
+/// Build a signed JWT with no subscriptions claim at all.
+fn make_jwt_no_subs() -> String {
+    #[derive(Serialize)]
+    struct NoClaims { sub: String, exp: u64 }
+    let claims = NoClaims { sub: "test-user-id".to_string(), exp: 9_999_999_999 };
+    encode(&Header::default(), &claims, &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes())).unwrap()
+}
+
+// ── Auth-enabled setup ────────────────────────────────────────────────────────
+
+/// Like `setup()` but with JWT enforcement enabled.
+/// Returns both the router (for HTTP requests) and the raw DB handle
+/// (for direct data seeding in limit tests).
+async fn setup_with_auth() -> (axum::Router, Db) {
+    let n = DB_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let conn = any::connect("mem://").await.unwrap();
+    conn.signin(Root { username: "root".to_string(), password: "root".to_string() })
+        .await
+        .ok();
+    conn.use_ns(format!("test_ns_{n}")).use_db(format!("test_db_{n}")).await.unwrap();
+    conn.query(include_str!("../migrations/schema.surql")).await.unwrap();
+    conn.query(
+        "CREATE family_tree CONTENT { name: $name, display_name: 'Test Tree', owner: 'testowner', is_primary: true }",
+    )
+    .bind(("name", TEST_TREE))
+    .await
+    .unwrap();
+
+    let db: Db = Arc::new(Mutex::new(conn));
+    let router = build_router(
+        db.clone(),
+        std::env::temp_dir().to_string_lossy().into_owned(),
+        true,
+        Some(TEST_JWT_SECRET.to_string()),
+    );
+    (router, db)
+}
+
+// ── Request helpers (auth-enabled variants) ───────────────────────────────────
+
+fn post_json_auth(uri: &str, body: Value, token: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+fn get_auth(uri: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap()
+}
 
 async fn setup() -> axum::Router {
     let n = DB_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -40,7 +127,7 @@ async fn setup() -> axum::Router {
     .unwrap();
 
     let db: Db = Arc::new(Mutex::new(conn));
-    build_router(db, std::env::temp_dir().to_string_lossy().into_owned(), true)
+    build_router(db, std::env::temp_dir().to_string_lossy().into_owned(), true, None)
 }
 
 async fn response_json(response: axum::response::Response) -> Value {
@@ -1310,4 +1397,312 @@ async fn test_list_persons_filter_by_tree() {
     let persons = body.as_array().unwrap();
     assert_eq!(persons.len(), 1);
     assert_eq!(persons[0]["first_name"], "Alice");
+}
+
+// ── JWT middleware enforcement ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_missing_jwt_returns_401() {
+    let (app, _) = setup_with_auth().await;
+    // POST /api/persons with no Authorization header
+    let response = app
+        .oneshot(post_json(
+            "/api/persons",
+            json!({"family_name": "Test", "first_name": "Nobody", "sex": "Male", "trees": [TEST_TREE]}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_invalid_jwt_returns_401() {
+    let (app, _) = setup_with_auth().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/persons")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer this.is.not.valid")
+                .body(Body::from(
+                    json!({"family_name": "T", "first_name": "N", "sex": "Male", "trees": [TEST_TREE]})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_valid_jwt_allows_request() {
+    let (app, _) = setup_with_auth().await;
+    let token = make_clann_jwt("individual", "active");
+    let response = app
+        .oneshot(post_json_auth(
+            "/api/persons",
+            json!({"family_name": "Test", "first_name": "Valid", "sex": "Male", "trees": [TEST_TREE]}),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn test_jwt_with_no_subscriptions_treated_as_individual() {
+    // No subscriptions claim → defaults to individual (limit=2 trees / 100 members)
+    // Just confirm the request is accepted (not 401)
+    let (app, _) = setup_with_auth().await;
+    let token = make_jwt_no_subs();
+    let response = app
+        .oneshot(post_json_auth(
+            "/api/persons",
+            json!({"family_name": "Test", "first_name": "NoSub", "sex": "Male", "trees": [TEST_TREE]}),
+            &token,
+        ))
+        .await
+        .unwrap();
+    // Should be 201 (under individual member limit)
+    assert_eq!(response.status(), StatusCode::CREATED);
+}
+
+// ── Tree limit enforcement ────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_individual_tree_limit_is_two() {
+    let (app, _) = setup_with_auth().await;
+    let token = make_clann_jwt("individual", "active");
+    const OWNER: &str = "limit-tree-user";
+
+    // First two trees should succeed
+    for name in ["tree-limit-a", "tree-limit-b"] {
+        let resp = app
+            .clone()
+            .oneshot(post_json_auth(
+                "/api/trees",
+                json!({"name": name, "display_name": name, "owner": OWNER, "is_primary": false}),
+                &token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED, "Expected 201 for tree {name}");
+    }
+
+    // Third tree should be rejected
+    let resp = app
+        .oneshot(post_json_auth(
+            "/api/trees",
+            json!({"name": "tree-limit-c", "display_name": "C", "owner": OWNER, "is_primary": false}),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = response_json(resp).await;
+    assert!(body["error"].as_str().unwrap().contains("Tree limit"));
+}
+
+#[tokio::test]
+async fn test_professional_tree_limit_is_unlimited() {
+    let (app, _) = setup_with_auth().await;
+    let token = make_clann_jwt("professional", "active");
+    const OWNER: &str = "pro-tree-user";
+
+    // Create more than the individual limit (3 trees) — all should succeed
+    for name in ["pro-tree-1", "pro-tree-2", "pro-tree-3"] {
+        let resp = app
+            .clone()
+            .oneshot(post_json_auth(
+                "/api/trees",
+                json!({"name": name, "display_name": name, "owner": OWNER, "is_primary": false}),
+                &token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED, "Expected 201 for {name}");
+    }
+}
+
+#[tokio::test]
+async fn test_family_tree_limit_is_ten() {
+    let (app, _) = setup_with_auth().await;
+    let token = make_clann_jwt("family", "active");
+    const OWNER: &str = "family-tree-limit-user";
+
+    // Seed 10 trees directly through the API (family limit = 10)
+    for i in 0..10 {
+        let name = format!("fam-tree-{i}");
+        let resp = app
+            .clone()
+            .oneshot(post_json_auth(
+                "/api/trees",
+                json!({"name": name, "display_name": name, "owner": OWNER, "is_primary": false}),
+                &token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED, "Expected 201 for tree {i}");
+    }
+
+    // 11th should be rejected
+    let resp = app
+        .oneshot(post_json_auth(
+            "/api/trees",
+            json!({"name": "fam-tree-overflow", "display_name": "X", "owner": OWNER, "is_primary": false}),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+// ── Member (person) limit enforcement ────────────────────────────────────────
+
+#[tokio::test]
+async fn test_individual_member_limit_is_100() {
+    let (app, db) = setup_with_auth().await;
+    let token = make_clann_jwt("individual", "active");
+    const CREATOR: &str = "limit-person-user";
+
+    // Seed 100 persons directly in the DB to avoid 100 HTTP round-trips
+    {
+        let db = db.lock().await;
+        for i in 0..100u32 {
+            db.query("CREATE person CONTENT { family_name: 'Seed', first_name: $n, sex: 'Male', trees: [$tree], created_by: $creator }")
+                .bind(("n", format!("Seed{i}")))
+                .bind(("tree", TEST_TREE))
+                .bind(("creator", CREATOR))
+                .await
+                .unwrap();
+        }
+    }
+
+    // 101st person via the API should be rejected
+    let resp = app
+        .oneshot(post_json_auth(
+            "/api/persons",
+            json!({"family_name": "Over", "first_name": "Limit", "sex": "Male", "trees": [TEST_TREE], "created_by": CREATOR}),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = response_json(resp).await;
+    assert!(body["error"].as_str().unwrap().contains("Member limit"));
+}
+
+#[tokio::test]
+async fn test_individual_member_limit_at_99_allows_one_more() {
+    let (app, db) = setup_with_auth().await;
+    let token = make_clann_jwt("individual", "active");
+    const CREATOR: &str = "limit-person-user-99";
+
+    // Seed 99 persons
+    {
+        let db = db.lock().await;
+        for i in 0..99u32 {
+            db.query("CREATE person CONTENT { family_name: 'Seed', first_name: $n, sex: 'Male', trees: [$tree], created_by: $creator }")
+                .bind(("n", format!("Seed{i}")))
+                .bind(("tree", TEST_TREE))
+                .bind(("creator", CREATOR))
+                .await
+                .unwrap();
+        }
+    }
+
+    // 100th should succeed
+    let resp = app
+        .oneshot(post_json_auth(
+            "/api/persons",
+            json!({"family_name": "Last", "first_name": "Allowed", "sex": "Male", "trees": [TEST_TREE], "created_by": CREATOR}),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn test_professional_member_limit_is_unlimited() {
+    let (app, db) = setup_with_auth().await;
+    let token = make_clann_jwt("professional", "active");
+    const CREATOR: &str = "pro-person-user";
+
+    // Seed 100 persons (individual limit) to confirm professional ignores it
+    {
+        let db = db.lock().await;
+        for i in 0..100u32 {
+            db.query("CREATE person CONTENT { family_name: 'Seed', first_name: $n, sex: 'Male', trees: [$tree], created_by: $creator }")
+                .bind(("n", format!("Seed{i}")))
+                .bind(("tree", TEST_TREE))
+                .bind(("creator", CREATOR))
+                .await
+                .unwrap();
+        }
+    }
+
+    // Should still succeed for professional
+    let resp = app
+        .oneshot(post_json_auth(
+            "/api/persons",
+            json!({"family_name": "Pro", "first_name": "Extra", "sex": "Male", "trees": [TEST_TREE], "created_by": CREATOR}),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn test_inactive_subscription_treated_as_individual() {
+    // A canceled/inactive subscription should default to individual tier limits
+    let (app, _) = setup_with_auth().await;
+    // "professional" tier but "canceled" status → should behave as individual
+    let token = make_clann_jwt("professional", "canceled");
+    const OWNER: &str = "canceled-sub-user";
+
+    for name in ["canceled-tree-a", "canceled-tree-b"] {
+        app.clone()
+            .oneshot(post_json_auth(
+                "/api/trees",
+                json!({"name": name, "display_name": name, "owner": OWNER, "is_primary": false}),
+                &token,
+            ))
+            .await
+            .unwrap();
+    }
+
+    // Third tree should fail — treated as individual (limit=2)
+    let resp = app
+        .oneshot(post_json_auth(
+            "/api/trees",
+            json!({"name": "canceled-tree-c", "display_name": "C", "owner": OWNER, "is_primary": false}),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_get_endpoints_accessible_with_valid_jwt() {
+    let (app, _) = setup_with_auth().await;
+    let token = make_clann_jwt("individual", "active");
+
+    // GET /api/persons should be accessible (read operations need auth too)
+    let resp = app
+        .oneshot(get_auth("/api/persons", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_get_endpoints_blocked_without_jwt() {
+    let (app, _) = setup_with_auth().await;
+    let resp = app.oneshot(get("/api/persons")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }

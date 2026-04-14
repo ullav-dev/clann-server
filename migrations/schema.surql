@@ -29,6 +29,22 @@ DEFINE INDEX IF NOT EXISTS idx_created_by  ON TABLE person COLUMNS created_by;
 REMOVE INDEX IF EXISTS idx_person_tree ON TABLE person;
 DEFINE INDEX IF NOT EXISTS idx_person_trees ON TABLE person COLUMNS trees;
 
+-- Life Events
+DEFINE TABLE IF NOT EXISTS life_event SCHEMAFULL;
+DEFINE FIELD OVERWRITE person_id ON TABLE life_event TYPE record<person>;
+DEFINE FIELD IF NOT EXISTS name         ON TABLE life_event TYPE string;
+DEFINE FIELD IF NOT EXISTS date         ON TABLE life_event TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS event_type   ON TABLE life_event TYPE string;
+DEFINE FIELD IF NOT EXISTS description  ON TABLE life_event TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS story        ON TABLE life_event TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS verified     ON TABLE life_event TYPE bool DEFAULT false VALUE $value OR false;
+DEFINE FIELD IF NOT EXISTS source_link  ON TABLE life_event TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS source_image ON TABLE life_event TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS source_doc   ON TABLE life_event TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS created_by   ON TABLE life_event TYPE option<string>;
+DEFINE INDEX IF NOT EXISTS idx_life_event_person ON TABLE life_event COLUMNS person_id;
+DEFINE INDEX IF NOT EXISTS idx_life_event_creator ON TABLE life_event COLUMNS created_by;
+
 DEFINE TABLE IF NOT EXISTS has_father  TYPE RELATION IN person OUT person SCHEMAFULL;
 DEFINE TABLE IF NOT EXISTS has_mother  TYPE RELATION IN person OUT person SCHEMAFULL;
 DEFINE TABLE IF NOT EXISTS has_sibling TYPE RELATION IN person OUT person SCHEMAFULL;

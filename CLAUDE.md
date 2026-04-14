@@ -38,22 +38,23 @@ Never use an in-memory or temporary database for local development — use `/opt
 
 ```
 src/main.rs                    entry point
-src/config.rs                  Config::from_env() — supports DB_USERNAME_FILE/DB_PASSWORD_FILE
+src/config.rs                  Config::from_env() — supports DB_USERNAME_FILE/DB_PASSWORD_FILE, JWT_SECRET
 src/db.rs                      connect() runs schema migration; pub type Db = Arc<Mutex<Surreal<Any>>>
-src/error.rs                   AppError → JSON { "error": "..." }
+src/error.rs                   AppError → JSON { "error": "..." }; includes Unauthorized, Forbidden variants
+src/auth.rs                    jwt_middleware + ClannAuth — JWT validation and subscription tier extraction
 src/lib.rs                     pub mod declarations for integration tests
 src/models/family_tree.rs      FamilyTree, CreateFamilyTree
 src/models/person.rs           Person, CreatePerson, UpdatePerson, Sex — includes tree, nickname, username, email, verified, biography, created_by
 src/models/relationship.rs     RelationshipType, FamilyTreeNode (includes sex, date_of_birth, place_of_birth, biography), SpouseInfo, etc.
-src/handlers/family_tree.rs    CRUD handlers for family trees
-src/handlers/person.rs         CRUD handlers (validates tree exists on create)
+src/handlers/family_tree.rs    CRUD handlers for family trees (enforces tree limit via ClannAuth)
+src/handlers/person.rs         CRUD handlers (validates tree exists on create; enforces member limit via ClannAuth)
 src/handlers/relationship.rs   relationship + family tree handlers
 src/handlers/image.rs          image upload/retrieval handlers
 src/openapi.rs                 ApiDoc, swagger_ui(), openapi_json()
-src/routes/mod.rs              build_router(db, upload_dir, enable_docs)
+src/routes/mod.rs              build_router(db, upload_dir, enable_docs, jwt_secret)
 migrations/schema.surql        SurrealDB schema (run at startup via include_str!)
 openapi.json                   committed OpenAPI spec (regenerate with: curl localhost:3000/api-docs/openapi.json)
-tests/api.rs                   integration tests (52 tests)
+tests/api.rs                   integration tests
 Dockerfile                         multi-stage build (rust:1.93-slim → debian:trixie-slim)
 docker-compose-prod.yaml           production compose: surrealdb + migrate + server (all on ullav-net)
 .env.prod                          non-secret env vars for docker-compose (gitignored)
@@ -79,6 +80,7 @@ scripts/surrealdb-entrypoint.sh    reads /run/secrets/db_password and starts sur
 | `UPLOAD_DIR`          | `./uploads`                | Directory for person image files                                      |
 | `DB_PATH`             | `/opt/ullav/clann/data.db` | SurrealDB data file path (used when starting SurrealDB with `surrealkv:$DB_PATH`) |
 | `ENABLE_DOCS`         | `true`                     | Set to `false` to disable `/swagger-ui` and `/api-docs/openapi.json`              |
+| `JWT_SECRET`          | —                          | When set, all requests must include a valid `Authorization: Bearer <jwt>`. Omit to disable auth (dev/test). |
 
 ## SurrealDB notes
 
@@ -94,9 +96,26 @@ scripts/surrealdb-entrypoint.sh    reads /run/secrets/db_password and starts sur
 - **`surreal import` does not work with `surrealkv`** — it uses the backup protocol which that engine doesn't support. Use `POST http://<host>:8000/sql` with `Surreal-NS`/`Surreal-DB` headers and Basic auth instead.
 - The `rust:1.93-slim` builder image is based on Debian trixie (GLIBC 2.40); the runtime must also be trixie or newer — `debian:bookworm-slim` (GLIBC 2.36) is too old.
 
+## Auth and subscription limits
+
+All API routes are protected by JWT middleware when `JWT_SECRET` is set. The JWT must be signed with the same secret used by `ullav-user-management` (HS256).
+
+The middleware reads a `subscriptions.clann` claim from the token to determine the user's plan tier. If the claim is absent or the subscription status is not `active` or `trialing`, the tier defaults to `individual`.
+
+| Tier           | Tree limit | Member limit |
+|----------------|-----------|--------------|
+| `individual`   | 2         | 100          |
+| `family`       | 10        | 1,000        |
+| `professional` | unlimited | unlimited    |
+| `enterprise`   | unlimited | unlimited    |
+
+Limits are enforced in `create_tree` and `create_person`. Exceeding a limit returns `403 Forbidden`.
+
+When `JWT_SECRET` is not set (local dev, integration tests), auth is skipped and an `enterprise`-tier `ClannAuth` is injected automatically so no limits apply.
+
 ## Testing
 
-Integration tests use `any::connect("mem://")` with a unique namespace/database per test (via `AtomicU64` counter) for isolation. Each test calls `setup()` which connects, runs the schema migration, and returns a `Router`. No external database or services required to run tests.
+Integration tests use `any::connect("mem://")` with a unique namespace/database per test (via `AtomicU64` counter) for isolation. Each test calls `setup()` (no auth) or `setup_with_auth()` (JWT enforcement enabled). No external database or services required to run tests.
 
 ## Family trees
 
@@ -106,6 +125,40 @@ Integration tests use `any::connect("mem://")` with a unique namespace/database 
 - Setting `is_primary: true` on create clears `is_primary` on all other trees for the same owner
 - `GET /api/persons` accepts `?tree=` filter in addition to `?created_by=`
 - Tests seed a default tree (`"test-tree"`) in `setup()` and pass `"trees": [TEST_TREE]` in every person creation
+
+## Life Events
+
+Life events record significant occurrences in a person's life (Birth, Death, Marriage, Graduation, Military, etc.) and are stored in the `life_event` table.
+
+### Key files
+
+| File | Description |
+|---|---|
+| `src/models/life_event.rs` | `LifeEvent`, `CreateLifeEvent`, `UpdateLifeEvent`, `EventType`; `LifeEvent` derives `SurrealValue` and serialises `id`/`person_id` (`RecordId`) as strings via `serialize_record_id` |
+| `src/handlers/life_event.rs` | Five CRUD handlers: `create_life_event`, `list_life_events`, `get_life_event`, `update_life_event`, `delete_life_event` |
+
+### API routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST`   | `/api/persons/{id}/life-events`   | Create a life event for a person |
+| `GET`    | `/api/persons/{id}/life-events`   | List all life events for a person (ordered by date ASC) |
+| `GET`    | `/api/life-events/{event_id}`     | Get a single life event |
+| `PUT`    | `/api/life-events/{event_id}`     | Replace a life event (MERGE semantics) |
+| `DELETE` | `/api/life-events/{event_id}`     | Delete a life event |
+
+### Schema
+
+`person_id` is stored as `record<person>` (not a string). This is critical:
+
+- **Never** put `record<>` typed fields into `serde_json::Value` — SurrealDB returns "Expected any, got record".
+- Always use types deriving `SurrealValue` (e.g. `LifeEvent`) when deserialising query results that include `person_id`.
+- Existence checks use `count() AS n … GROUP ALL` (returns an integer, safe for `serde_json::Value`).
+- `CREATE life_event SET …` in handlers uses query-string binding and `Vec<LifeEvent>` return — not `.content(body)` with `serde_json::Value`.
+
+### Seed migration
+
+`db::seed_life_events()` runs at startup to create Birth/Death/Marriage events from existing `person` records and `has_spouse` edges. Seed queries use `Vec<LifeEvent>` with `.take(0)?` to surface any CREATE errors rather than silently swallowing them.
 
 ## Relationship types
 
