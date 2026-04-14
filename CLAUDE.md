@@ -126,6 +126,40 @@ Integration tests use `any::connect("mem://")` with a unique namespace/database 
 - `GET /api/persons` accepts `?tree=` filter in addition to `?created_by=`
 - Tests seed a default tree (`"test-tree"`) in `setup()` and pass `"trees": [TEST_TREE]` in every person creation
 
+## Life Events
+
+Life events record significant occurrences in a person's life (Birth, Death, Marriage, Graduation, Military, etc.) and are stored in the `life_event` table.
+
+### Key files
+
+| File | Description |
+|---|---|
+| `src/models/life_event.rs` | `LifeEvent`, `CreateLifeEvent`, `UpdateLifeEvent`, `EventType`; `LifeEvent` derives `SurrealValue` and serialises `id`/`person_id` (`RecordId`) as strings via `serialize_record_id` |
+| `src/handlers/life_event.rs` | Five CRUD handlers: `create_life_event`, `list_life_events`, `get_life_event`, `update_life_event`, `delete_life_event` |
+
+### API routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST`   | `/api/persons/{id}/life-events`   | Create a life event for a person |
+| `GET`    | `/api/persons/{id}/life-events`   | List all life events for a person (ordered by date ASC) |
+| `GET`    | `/api/life-events/{event_id}`     | Get a single life event |
+| `PUT`    | `/api/life-events/{event_id}`     | Replace a life event (MERGE semantics) |
+| `DELETE` | `/api/life-events/{event_id}`     | Delete a life event |
+
+### Schema
+
+`person_id` is stored as `record<person>` (not a string). This is critical:
+
+- **Never** put `record<>` typed fields into `serde_json::Value` — SurrealDB returns "Expected any, got record".
+- Always use types deriving `SurrealValue` (e.g. `LifeEvent`) when deserialising query results that include `person_id`.
+- Existence checks use `count() AS n … GROUP ALL` (returns an integer, safe for `serde_json::Value`).
+- `CREATE life_event SET …` in handlers uses query-string binding and `Vec<LifeEvent>` return — not `.content(body)` with `serde_json::Value`.
+
+### Seed migration
+
+`db::seed_life_events()` runs at startup to create Birth/Death/Marriage events from existing `person` records and `has_spouse` edges. Seed queries use `Vec<LifeEvent>` with `.take(0)?` to surface any CREATE errors rather than silently swallowing them.
+
 ## Relationship types
 
 | JSON `type` | Edge table   | Extra fields                                      |

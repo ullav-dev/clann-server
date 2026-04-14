@@ -186,10 +186,38 @@ pub async fn update_life_event(
         return Err(AppError::NotFound);
     }
 
-    let body = serde_json::to_value(&payload)
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let updated: Option<LifeEvent> = db.update(eid).merge(body).await?;
-    updated.map(Json).ok_or(AppError::NotFound)
+    // Use an explicit UPDATE SET with bound parameters rather than MERGE+JSON.
+    // The SDK maps Option::None bindings to SurrealDB NONE (not NULL), which is
+    // what option<string> schema fields require to clear a value.  MERGE via
+    // serde_json would silently skip None fields (skip_serializing_if) instead
+    // of clearing them.
+    let updated: Vec<LifeEvent> = db
+        .query(
+            "UPDATE $eid SET \
+             name         = $name, \
+             date         = $date, \
+             event_type   = $et, \
+             description  = $desc, \
+             story        = $story, \
+             verified     = $verified, \
+             source_link  = $sl, \
+             source_image = $si, \
+             source_doc   = $sd",
+        )
+        .bind(("eid",      eid))
+        .bind(("name",     payload.name))
+        .bind(("date",     payload.date))
+        .bind(("et",       payload.event_type))
+        .bind(("desc",     payload.description))
+        .bind(("story",    payload.story))
+        .bind(("verified", payload.verified))
+        .bind(("sl",       payload.source_link))
+        .bind(("si",       payload.source_image))
+        .bind(("sd",       payload.source_doc))
+        .await?
+        .take(0)?;
+
+    updated.into_iter().next().map(Json).ok_or(AppError::NotFound)
 }
 
 #[utoipa::path(
