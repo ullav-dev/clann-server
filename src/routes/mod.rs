@@ -36,7 +36,12 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
         async move { jwt_middleware(req, next, secret).await }
     });
 
-    router
+    // Image GET routes are public — browsers fetch <img src> without Authorization headers.
+    let public_routes = Router::new()
+        .route("/api/persons/{id}/image", get(get_image))
+        .route("/api/persons/{id}/life-image", get(get_life_image));
+
+    let protected_routes = Router::new()
         // Family trees
         .route("/api/trees", post(create_tree).get(list_trees))
         .route("/api/trees/{name}", get(get_tree).delete(delete_tree))
@@ -49,15 +54,9 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
         )
         .route("/api/persons/{id}/trees", post(add_person_to_tree))
         .route("/api/persons/{id}/trees/{tree_name}", delete(remove_person_from_tree))
-        // Images
-        .route(
-            "/api/persons/{id}/image",
-            post(upload_image).get(get_image),
-        )
-        .route(
-            "/api/persons/{id}/life-image",
-            post(upload_life_image).get(get_life_image),
-        )
+        // Image uploads (GET is in public_routes above)
+        .route("/api/persons/{id}/image", post(upload_image))
+        .route("/api/persons/{id}/life-image", post(upload_life_image))
         // Relationships
         .route(
             "/api/persons/{id}/relationships",
@@ -87,7 +86,11 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
             "/api/notes/{note_id}",
             get(get_research_note).put(update_research_note).delete(delete_research_note),
         )
-        .layer(auth_layer)
+        .layer(auth_layer);
+
+    router
+        .merge(public_routes)
+        .merge(protected_routes)
         .layer(Extension(upload_dir))
         .with_state(db)
 }
