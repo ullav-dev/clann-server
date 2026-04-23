@@ -57,18 +57,13 @@ fn mime_for_ext(ext: &str) -> &'static str {
 
 /// Queries total media bytes used by `user_id` across all their persons.
 async fn total_media_bytes(db: &crate::db::DbConn, user_id: &str) -> Result<i64, crate::error::AppError> {
-    let result: Option<serde_json::Value> = db
-        .query(
-            "SELECT math::sum(array::flatten(SELECT [(image_bytes ?? 0), (life_image_bytes ?? 0)] \
-             FROM person WHERE created_by = $uid)) AS total"
-        )
+    let result: Option<i64> = db
+        .query("RETURN math::sum((SELECT VALUE (image_bytes ?? 0) + (life_image_bytes ?? 0) FROM person WHERE created_by = $uid))")
         .bind(("uid", user_id.to_string()))
         .await?
         .take(0)?;
 
-    Ok(result
-        .and_then(|v| v.get("total").and_then(|t| t.as_i64()))
-        .unwrap_or(0))
+    Ok(result.unwrap_or(0))
 }
 
 #[utoipa::path(
