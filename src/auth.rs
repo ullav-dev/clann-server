@@ -57,6 +57,30 @@ impl ClannAuth {
             _ => Some(100), // individual
         }
     }
+
+    /// Maximum total media storage in bytes for this plan. `None` = unlimited.
+    pub fn storage_limit_bytes(&self) -> Option<i64> {
+        match self.tier.as_str() {
+            "enterprise" => None,
+            "professional" => Some(50 * 1024 * 1024 * 1024), // 50 GB
+            "family" => Some(5 * 1024 * 1024 * 1024),         // 5 GB
+            _ => Some(100 * 1024 * 1024),                     // individual: 100 MB
+        }
+    }
+
+    /// Returns `true` if the given MIME type is allowed for life-story media uploads.
+    /// Individual/family plans are image-only; professional/enterprise allow all media.
+    pub fn life_media_type_allowed(&self, mime: &str) -> bool {
+        match self.tier.as_str() {
+            "professional" | "enterprise" => {
+                mime.starts_with("image/")
+                    || mime.starts_with("video/")
+                    || mime.starts_with("audio/")
+                    || mime == "application/pdf"
+            }
+            _ => mime.starts_with("image/"),
+        }
+    }
 }
 
 // ── Middleware ────────────────────────────────────────────────────────────────
