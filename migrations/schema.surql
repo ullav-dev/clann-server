@@ -45,6 +45,18 @@ DEFINE FIELD IF NOT EXISTS created_by   ON TABLE life_event TYPE option<string>;
 DEFINE INDEX IF NOT EXISTS idx_life_event_person ON TABLE life_event COLUMNS person_id;
 DEFINE INDEX IF NOT EXISTS idx_life_event_creator ON TABLE life_event COLUMNS created_by;
 
+-- Research Notes
+DEFINE TABLE IF NOT EXISTS research_note SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS title       ON TABLE research_note TYPE string;
+DEFINE FIELD IF NOT EXISTS description ON TABLE research_note TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS body        ON TABLE research_note TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS trees       ON TABLE research_note TYPE array<string> DEFAULT [];
+DEFINE FIELD IF NOT EXISTS created_by  ON TABLE research_note TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS created_at  ON TABLE research_note TYPE string DEFAULT <string>time::now();
+DEFINE FIELD IF NOT EXISTS updated_at  ON TABLE research_note TYPE string DEFAULT <string>time::now();
+DEFINE INDEX IF NOT EXISTS idx_note_creator ON TABLE research_note COLUMNS created_by;
+DEFINE INDEX IF NOT EXISTS idx_note_trees   ON TABLE research_note COLUMNS trees;
+
 DEFINE TABLE IF NOT EXISTS has_father  TYPE RELATION IN person OUT person SCHEMAFULL;
 DEFINE TABLE IF NOT EXISTS has_mother  TYPE RELATION IN person OUT person SCHEMAFULL;
 DEFINE TABLE IF NOT EXISTS has_sibling TYPE RELATION IN person OUT person SCHEMAFULL;

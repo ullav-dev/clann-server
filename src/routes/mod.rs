@@ -16,6 +16,7 @@ use crate::{
             add_relationship, delete_relationship, get_family_tree, get_relationships,
             update_spouse_dates,
         },
+        research_note::{create_research_note, delete_research_note, get_research_note, list_research_notes, update_research_note},
     },
     openapi::{openapi_json, swagger_ui},
 };
@@ -79,6 +80,12 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
         .route(
             "/api/life-events/{event_id}",
             get(get_life_event).put(update_life_event).delete(delete_life_event),
+        )
+        // Research Notes
+        .route("/api/notes", post(create_research_note).get(list_research_notes))
+        .route(
+            "/api/notes/{note_id}",
+            get(get_research_note).put(update_research_note).delete(delete_research_note),
         )
         .layer(auth_layer)
         .layer(Extension(upload_dir))
