@@ -17,6 +17,7 @@ use crate::{
             update_spouse_dates,
         },
         research_note::{create_research_note, delete_research_note, get_research_note, list_research_notes, update_research_note},
+        user_ai_settings::{delete_ai_settings, get_ai_settings, upsert_ai_settings},
     },
     openapi::{openapi_json, swagger_ui},
 };
@@ -85,6 +86,11 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
         .route(
             "/api/notes/{note_id}",
             get(get_research_note).put(update_research_note).delete(delete_research_note),
+        )
+        // AI Settings (encrypted BYOK; webapp encrypts, server stores opaque blobs)
+        .route(
+            "/api/ai-settings",
+            get(get_ai_settings).put(upsert_ai_settings).delete(delete_ai_settings),
         )
         .layer(auth_layer);
 

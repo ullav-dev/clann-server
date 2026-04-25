@@ -71,3 +71,14 @@ DEFINE INDEX IF NOT EXISTS unique_father  ON TABLE has_father  COLUMNS in, out U
 DEFINE INDEX IF NOT EXISTS unique_mother  ON TABLE has_mother  COLUMNS in, out UNIQUE;
 DEFINE INDEX IF NOT EXISTS unique_sibling ON TABLE has_sibling COLUMNS in, out UNIQUE;
 DEFINE INDEX IF NOT EXISTS unique_spouse  ON TABLE has_spouse  COLUMNS in, out UNIQUE;
+
+-- AI Settings (encrypted BYOK keys; webapp encrypts, server stores opaque blobs)
+DEFINE TABLE IF NOT EXISTS user_ai_settings SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS username      ON TABLE user_ai_settings TYPE string;
+DEFINE FIELD IF NOT EXISTS provider      ON TABLE user_ai_settings TYPE string;
+DEFINE FIELD IF NOT EXISTS model         ON TABLE user_ai_settings TYPE string;
+DEFINE FIELD IF NOT EXISTS ollama_url    ON TABLE user_ai_settings TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS encrypted_key ON TABLE user_ai_settings TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS iv            ON TABLE user_ai_settings TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS auth_tag      ON TABLE user_ai_settings TYPE option<string>;
+DEFINE INDEX IF NOT EXISTS idx_ai_settings_username ON TABLE user_ai_settings COLUMNS username UNIQUE;

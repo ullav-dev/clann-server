@@ -3,3 +3,4 @@ pub mod life_event;
 pub mod person;
 pub mod relationship;
 pub mod research_note;
+pub mod user_ai_settings;
