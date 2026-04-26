@@ -136,6 +136,12 @@ Life events record significant occurrences in a person's life (Birth, Death, Mar
 |---|---|
 | `src/models/life_event.rs` | `LifeEvent`, `CreateLifeEvent`, `UpdateLifeEvent`, `EventType`; `LifeEvent` derives `SurrealValue` and serialises `id`/`person_id` (`RecordId`) as strings via `serialize_record_id` |
 | `src/handlers/life_event.rs` | Five CRUD handlers: `create_life_event`, `list_life_events`, `get_life_event`, `update_life_event`, `delete_life_event` |
+| `src/models/user_ai_settings.rs` | `UserAiSettings`, `UpsertAiSettings` — encrypted BYOK key storage (webapp encrypts, server stores opaque blobs) |
+| `src/handlers/user_ai_settings.rs` | `get_ai_settings`, `upsert_ai_settings`, `delete_ai_settings` |
+| `src/models/research_folder.rs` | `ResearchFolder`, `CreateResearchFolder`, `RenameResearchFolder` |
+| `src/handlers/research_folder.rs` | `list_folders`, `create_folder`, `rename_folder`, `delete_folder` (unfiles affected notes atomically before deleting) |
+| `src/models/chat_session.rs` | `ChatSession`, `CreateChatSession`, `ChatMessage`, `AppendMessage` |
+| `src/handlers/chat_session.rs` | `list_sessions`, `create_session`, `delete_session` (cascades messages), `list_session_messages`, `append_message` |
 
 ### API routes
 
@@ -170,3 +176,46 @@ Life events record significant occurrences in a person's life (Birth, Death, Mar
 | `Spouse`    | `has_spouse` | `spouse_from`, `spouse_to` (optional date strings)|
 
 Spouse edges are stored bidirectionally (A→B and B→A). `GET .../relationships` returns `spouse: Vec<SpouseInfo>` which includes `spouse_from` and `spouse_to` from the edge. `PATCH .../spouse-dates/{related_id}` updates those fields on both directions simultaneously.
+
+## AI Settings (BYOK)
+
+Stores per-user encrypted AI provider configuration. The webapp encrypts the API key with AES-256-GCM before sending — the server stores opaque blobs and never sees the key in plain text.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/ai-settings` | Get settings for the authenticated user |
+| `PUT` | `/api/ai-settings` | Create or replace settings |
+| `DELETE` | `/api/ai-settings` | Remove settings |
+
+Fields: `username`, `provider` (`anthropic`/`openai`/`ollama`), `model`, `ollama_url`, `encrypted_key`, `iv`, `auth_tag`. The unique index on `username` means `PUT` always upserts.
+
+## Research Folders
+
+User-scoped containers for grouping research notes. Notes carry a `folder_id: option<string>` field (raw ID string, not a `record<>` type, to avoid SurrealDB query complications).
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/folders?created_by=<user>` | List folders (ordered by name ASC) |
+| `POST` | `/api/folders` | Create folder |
+| `PATCH` | `/api/folders/{id}` | Rename folder |
+| `DELETE` | `/api/folders/{id}` | Delete folder; atomically unfiles all notes (`folder_id = NONE`) before deleting |
+
+Note moves use a separate endpoint to avoid the main PUT accidentally clearing `folder_id`:
+
+| Method | Path | Notes |
+|---|---|---|
+| `PATCH` | `/api/notes/{id}/folder` | Set or clear the folder for a note (`folder_id: null` to unfile) |
+
+## Chat Sessions (AI conversation history)
+
+Stores AI research assistant conversations, scoped per user and family tree.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/chat/sessions?created_by=<user>&tree=<name>` | List sessions (ordered by `updated_at DESC`) |
+| `POST` | `/api/chat/sessions` | Create session (title, created_by, tree) |
+| `DELETE` | `/api/chat/sessions/{id}` | Delete session and all its messages |
+| `GET` | `/api/chat/sessions/{id}/messages` | List messages (ordered by `created_at ASC`) |
+| `POST` | `/api/chat/sessions/{id}/messages` | Append a message; also bumps `session.updated_at` |
+
+`role` is constrained to `"user"` or `"assistant"`. The webapp creates a session on the first send (titled after the opening message) and appends messages after each streaming completion.

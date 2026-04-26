@@ -264,6 +264,40 @@ curl -X PUT http://localhost:3000/api/life-events/{event_id} \
   -d '{"name": "Born in Dublin", "event_type": "Birth", "date": "1920-03-15", "description": "Born at the Rotunda Hospital"}'
 ```
 
+### AI Settings
+
+Stores per-user AI provider configuration for the Research Assistant. The webapp encrypts the API key before sending — the server stores opaque blobs and never sees the key in plain text.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/ai-settings` | Get AI settings for the authenticated user |
+| `PUT` | `/api/ai-settings` | Create or replace settings (upsert by username) |
+| `DELETE` | `/api/ai-settings` | Remove AI settings |
+
+### Research Folders
+
+User-scoped containers for grouping research notes. Deleting a folder atomically unfiles all its notes before removing the folder record.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/folders?created_by=<user>` | List folders (ordered by name) |
+| `POST` | `/api/folders` | Create a folder |
+| `PATCH` | `/api/folders/{id}` | Rename a folder |
+| `DELETE` | `/api/folders/{id}` | Delete folder and unfile its notes |
+| `PATCH` | `/api/notes/{id}/folder` | Move a note to a folder (`folder_id: null` to unfile) |
+
+### Chat Sessions
+
+Persists AI Research Assistant conversations, scoped per user and family tree. Sessions are created automatically by the webapp on the first message and updated after each AI response.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/chat/sessions?created_by=<user>&tree=<name>` | List sessions (newest first) |
+| `POST` | `/api/chat/sessions` | Create a session |
+| `DELETE` | `/api/chat/sessions/{id}` | Delete session and all its messages |
+| `GET` | `/api/chat/sessions/{id}/messages` | List messages in order |
+| `POST` | `/api/chat/sessions/{id}/messages` | Append a message (role: `user` or `assistant`) |
+
 ## Production deployment
 
 The server is distributed as a Docker image at `ghcr.io/ullav-dev/clann-server:latest`.
