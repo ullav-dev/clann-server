@@ -9,7 +9,7 @@ use crate::{
     auth::ClannAuth,
     db::Db,
     error::{AppError, ErrorResponse},
-    models::family_tree::{CreateFamilyTree, FamilyTree},
+    models::family_tree::{CreateFamilyTree, FamilyTree, UpdateFamilyTree},
 };
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -159,6 +159,46 @@ pub async fn set_primary_tree(
     .bind(("owner", tree.owner.clone()))
     .bind(("name", name.clone()))
     .await?;
+
+    let updated: Option<FamilyTree> = db
+        .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
+        .bind(("name", name))
+        .await?
+        .take(0)?;
+    Ok(Json(updated.ok_or(AppError::NotFound)?))
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/trees/{name}",
+    params(
+        ("name" = String, Path, description = "Unique tree name")
+    ),
+    request_body = UpdateFamilyTree,
+    responses(
+        (status = 200, description = "Tree updated", body = FamilyTree),
+        (status = 404, description = "Family tree not found", body = ErrorResponse),
+    ),
+    tag = "trees"
+)]
+pub async fn update_tree(
+    State(db): State<Db>,
+    Path(name): Path<String>,
+    Json(payload): Json<UpdateFamilyTree>,
+) -> Result<Json<FamilyTree>, AppError> {
+    let db = db.lock().await;
+
+    let existing: Option<FamilyTree> = db
+        .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
+        .bind(("name", name.clone()))
+        .await?
+        .take(0)?;
+    existing.ok_or(AppError::NotFound)?;
+
+    db.query("UPDATE family_tree SET display_name = $display_name WHERE name = $name")
+        .bind(("display_name", payload.display_name))
+        .bind(("name", name.clone()))
+        .await?;
 
     let updated: Option<FamilyTree> = db
         .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")

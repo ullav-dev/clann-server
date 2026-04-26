@@ -8,7 +8,7 @@ use crate::{
     auth::jwt_middleware,
     db::Db,
     handlers::{
-        family_tree::{create_tree, delete_tree, get_tree, list_trees, set_primary_tree},
+        family_tree::{create_tree, delete_tree, get_tree, list_trees, set_primary_tree, update_tree},
         image::{get_image, get_life_image, upload_image, upload_life_image},
         life_event::{create_life_event, delete_life_event, get_life_event, list_life_events, update_life_event},
         person::{add_person_to_tree, create_person, delete_person, get_person, list_persons, remove_person_from_tree, update_person},
@@ -47,7 +47,7 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
     let protected_routes = Router::new()
         // Family trees
         .route("/api/trees", post(create_tree).get(list_trees))
-        .route("/api/trees/{name}", get(get_tree).delete(delete_tree))
+        .route("/api/trees/{name}", get(get_tree).patch(update_tree).delete(delete_tree))
         .route("/api/trees/{name}/set-primary", patch(set_primary_tree))
         // Persons
         .route("/api/persons", post(create_person).get(list_persons))
