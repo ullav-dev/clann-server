@@ -72,6 +72,17 @@ DEFINE INDEX IF NOT EXISTS unique_mother  ON TABLE has_mother  COLUMNS in, out U
 DEFINE INDEX IF NOT EXISTS unique_sibling ON TABLE has_sibling COLUMNS in, out UNIQUE;
 DEFINE INDEX IF NOT EXISTS unique_spouse  ON TABLE has_spouse  COLUMNS in, out UNIQUE;
 
+-- AI Settings (encrypted BYOK keys; webapp encrypts, server stores opaque blobs)
+DEFINE TABLE IF NOT EXISTS user_ai_settings SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS username      ON TABLE user_ai_settings TYPE string;
+DEFINE FIELD IF NOT EXISTS provider      ON TABLE user_ai_settings TYPE string;
+DEFINE FIELD IF NOT EXISTS model         ON TABLE user_ai_settings TYPE string;
+DEFINE FIELD IF NOT EXISTS ollama_url    ON TABLE user_ai_settings TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS encrypted_key ON TABLE user_ai_settings TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS iv            ON TABLE user_ai_settings TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS auth_tag      ON TABLE user_ai_settings TYPE option<string>;
+DEFINE INDEX IF NOT EXISTS idx_ai_settings_username ON TABLE user_ai_settings COLUMNS username UNIQUE;
+
 -- Research Folders (user-scoped; notes store the raw folder ID string as folder_id)
 DEFINE TABLE IF NOT EXISTS research_folder SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS name       ON TABLE research_folder TYPE string;
@@ -81,3 +92,20 @@ DEFINE INDEX IF NOT EXISTS idx_folder_creator ON TABLE research_folder COLUMNS c
 DEFINE INDEX IF NOT EXISTS unique_folder_name ON TABLE research_folder COLUMNS created_by, name UNIQUE;
 
 DEFINE FIELD IF NOT EXISTS folder_id ON TABLE research_note TYPE option<string>;
+
+-- Chat Sessions (AI research assistant conversation history)
+DEFINE TABLE IF NOT EXISTS chat_session SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS title      ON TABLE chat_session TYPE string;
+DEFINE FIELD IF NOT EXISTS created_by ON TABLE chat_session TYPE string;
+DEFINE FIELD IF NOT EXISTS tree       ON TABLE chat_session TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS created_at ON TABLE chat_session TYPE string DEFAULT <string>time::now();
+DEFINE FIELD IF NOT EXISTS updated_at ON TABLE chat_session TYPE string DEFAULT <string>time::now();
+DEFINE INDEX IF NOT EXISTS idx_session_creator ON TABLE chat_session COLUMNS created_by;
+DEFINE INDEX IF NOT EXISTS idx_session_tree    ON TABLE chat_session COLUMNS tree;
+
+DEFINE TABLE IF NOT EXISTS chat_message SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS session_id ON TABLE chat_message TYPE record<chat_session>;
+DEFINE FIELD IF NOT EXISTS role       ON TABLE chat_message TYPE string ASSERT $value IN ["user", "assistant"];
+DEFINE FIELD IF NOT EXISTS content    ON TABLE chat_message TYPE string;
+DEFINE FIELD IF NOT EXISTS created_at ON TABLE chat_message TYPE string DEFAULT <string>time::now();
+DEFINE INDEX IF NOT EXISTS idx_message_session ON TABLE chat_message COLUMNS session_id;
