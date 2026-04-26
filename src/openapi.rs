@@ -4,7 +4,7 @@ use utoipa::OpenApi;
 use crate::{
     error::ErrorResponse,
     models::{
-        family_tree::{CreateFamilyTree, FamilyTree},
+        family_tree::{CreateFamilyTree, FamilyTree, UpdateFamilyTree},
         life_event::{CreateLifeEvent, EventType, LifeEvent, UpdateLifeEvent},
         person::{CreatePerson, Person, Sex, UpdatePerson},
         relationship::{AddRelationshipRequest, RelationshipType, RelationshipsResponse, SiblingType},
@@ -22,6 +22,7 @@ use crate::{
         crate::handlers::family_tree::create_tree,
         crate::handlers::family_tree::list_trees,
         crate::handlers::family_tree::get_tree,
+        crate::handlers::family_tree::update_tree,
         crate::handlers::family_tree::delete_tree,
         crate::handlers::family_tree::set_primary_tree,
         crate::handlers::person::create_person,
@@ -44,7 +45,7 @@ use crate::{
     ),
     components(
         schemas(
-            FamilyTree, CreateFamilyTree,
+            FamilyTree, CreateFamilyTree, UpdateFamilyTree,
             Person, CreatePerson, UpdatePerson, Sex,
             AddRelationshipRequest, RelationshipsResponse,
             SiblingType, RelationshipType,

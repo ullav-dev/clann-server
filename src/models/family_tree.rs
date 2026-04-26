@@ -28,6 +28,12 @@ pub struct FamilyTree {
     pub is_primary: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct UpdateFamilyTree {
+    /// New human-readable display name.
+    pub display_name: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema, SurrealValue)]
 pub struct CreateFamilyTree {
     /// Unique slug identifier for this tree (e.g. `"smith-family"`). Must be globally unique.
