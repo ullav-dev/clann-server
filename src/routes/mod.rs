@@ -16,7 +16,9 @@ use crate::{
             add_relationship, delete_relationship, get_family_tree, get_relationships,
             update_spouse_dates,
         },
-        research_note::{create_research_note, delete_research_note, get_research_note, list_research_notes, update_research_note},
+        chat_session::{create_session, delete_session, list_sessions, list_session_messages, append_message},
+        research_folder::{create_folder, delete_folder, list_folders, rename_folder},
+        research_note::{create_research_note, delete_research_note, get_research_note, list_research_notes, set_note_folder, update_research_note},
         user_ai_settings::{delete_ai_settings, get_ai_settings, upsert_ai_settings},
     },
     openapi::{openapi_json, swagger_ui},
@@ -87,11 +89,19 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
             "/api/notes/{note_id}",
             get(get_research_note).put(update_research_note).delete(delete_research_note),
         )
+        .route("/api/notes/{note_id}/folder", patch(set_note_folder))
+        // Research Folders
+        .route("/api/folders", post(create_folder).get(list_folders))
+        .route("/api/folders/{id}", patch(rename_folder).delete(delete_folder))
         // AI Settings (encrypted BYOK; webapp encrypts, server stores opaque blobs)
         .route(
             "/api/ai-settings",
             get(get_ai_settings).put(upsert_ai_settings).delete(delete_ai_settings),
         )
+        // Chat Sessions
+        .route("/api/chat/sessions", post(create_session).get(list_sessions))
+        .route("/api/chat/sessions/{id}", delete(delete_session))
+        .route("/api/chat/sessions/{id}/messages", get(list_session_messages).post(append_message))
         .layer(auth_layer);
 
     router
