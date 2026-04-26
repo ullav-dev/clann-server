@@ -23,6 +23,7 @@ pub struct ResearchNote {
     pub body: Option<String>,
     /// Names of the family trees this note is linked to.
     pub trees: Vec<String>,
+    pub folder_id: Option<String>,
     pub created_by: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
@@ -34,6 +35,7 @@ pub struct CreateResearchNote {
     pub description: Option<String>,
     pub body: Option<String>,
     pub trees: Vec<String>,
+    pub folder_id: Option<String>,
     pub created_by: Option<String>,
 }
 
@@ -47,4 +49,9 @@ pub struct UpdateResearchNote {
     pub body: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trees: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SetNoteFolderPayload {
+    pub folder_id: Option<String>,
 }

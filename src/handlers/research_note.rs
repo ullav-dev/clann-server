@@ -9,7 +9,7 @@ use crate::{
     auth::ClannAuth,
     db::Db,
     error::{AppError, ErrorResponse},
-    models::research_note::{CreateResearchNote, ResearchNote, UpdateResearchNote},
+    models::research_note::{CreateResearchNote, ResearchNote, SetNoteFolderPayload, UpdateResearchNote},
 };
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -43,13 +43,15 @@ pub async fn create_research_note(
              description = $desc, \
              body        = $body, \
              trees       = $trees, \
+             folder_id   = $folder_id, \
              created_by  = $creator",
         )
-        .bind(("title",   payload.title))
-        .bind(("desc",    payload.description))
-        .bind(("body",    payload.body))
-        .bind(("trees",   payload.trees))
-        .bind(("creator", payload.created_by))
+        .bind(("title",     payload.title))
+        .bind(("desc",      payload.description))
+        .bind(("body",      payload.body))
+        .bind(("trees",     payload.trees))
+        .bind(("folder_id", payload.folder_id))
+        .bind(("creator",   payload.created_by))
         .await?
         .take(0)?;
 
@@ -199,4 +201,38 @@ pub async fn delete_research_note(
     }
     let _: Option<ResearchNote> = db.delete(nid).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/notes/{note_id}/folder",
+    params(("note_id" = String, Path, description = "Research note ULID")),
+    request_body = SetNoteFolderPayload,
+    responses(
+        (status = 200, body = ResearchNote),
+        (status = 401, body = ErrorResponse),
+        (status = 404, body = ErrorResponse),
+    ),
+    tag = "research-notes"
+)]
+pub async fn set_note_folder(
+    State(db): State<Db>,
+    Extension(_auth): Extension<ClannAuth>,
+    Path(note_id): Path<String>,
+    Json(payload): Json<SetNoteFolderPayload>,
+) -> Result<Json<ResearchNote>, AppError> {
+    use surrealdb::types::RecordId;
+    let db = db.lock().await;
+    let nid = RecordId::new("research_note", note_id.as_str());
+    let existing: Option<ResearchNote> = db.select(nid.clone()).await?;
+    if existing.is_none() {
+        return Err(AppError::NotFound);
+    }
+    let updated: Vec<ResearchNote> = db
+        .query("UPDATE $nid SET folder_id = $folder_id, updated_at = <string>time::now()")
+        .bind(("nid",       nid))
+        .bind(("folder_id", payload.folder_id))
+        .await?
+        .take(0)?;
+    updated.into_iter().next().map(Json).ok_or(AppError::NotFound)
 }
