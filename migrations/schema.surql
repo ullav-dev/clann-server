@@ -71,3 +71,13 @@ DEFINE INDEX IF NOT EXISTS unique_father  ON TABLE has_father  COLUMNS in, out U
 DEFINE INDEX IF NOT EXISTS unique_mother  ON TABLE has_mother  COLUMNS in, out UNIQUE;
 DEFINE INDEX IF NOT EXISTS unique_sibling ON TABLE has_sibling COLUMNS in, out UNIQUE;
 DEFINE INDEX IF NOT EXISTS unique_spouse  ON TABLE has_spouse  COLUMNS in, out UNIQUE;
+
+-- Research Folders (user-scoped; notes store the raw folder ID string as folder_id)
+DEFINE TABLE IF NOT EXISTS research_folder SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS name       ON TABLE research_folder TYPE string;
+DEFINE FIELD IF NOT EXISTS created_by ON TABLE research_folder TYPE string;
+DEFINE FIELD IF NOT EXISTS created_at ON TABLE research_folder TYPE string DEFAULT <string>time::now();
+DEFINE INDEX IF NOT EXISTS idx_folder_creator ON TABLE research_folder COLUMNS created_by;
+DEFINE INDEX IF NOT EXISTS unique_folder_name ON TABLE research_folder COLUMNS created_by, name UNIQUE;
+
+DEFINE FIELD IF NOT EXISTS folder_id ON TABLE research_note TYPE option<string>;
