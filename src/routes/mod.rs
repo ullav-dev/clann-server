@@ -18,7 +18,7 @@ use crate::{
         },
         chat_session::{create_session, delete_session, list_sessions, list_session_messages, append_message},
         research_folder::{create_folder, delete_folder, list_folders, rename_folder},
-        research_note::{create_research_note, delete_research_note, get_research_note, list_research_notes, set_note_folder, update_research_note},
+        research_note::{create_note_reply, create_research_note, delete_research_note, get_research_note, list_note_replies, list_research_notes, set_note_folder, update_research_note},
         user_ai_settings::{delete_ai_settings, get_ai_settings, upsert_ai_settings},
     },
     openapi::{openapi_json, swagger_ui},
@@ -91,6 +91,7 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
             get(get_research_note).put(update_research_note).delete(delete_research_note),
         )
         .route("/api/notes/{note_id}/folder", patch(set_note_folder))
+        .route("/api/notes/{note_id}/replies", get(list_note_replies).post(create_note_reply))
         // Research Folders
         .route("/api/folders", post(create_folder).get(list_folders))
         .route("/api/folders/{id}", patch(rename_folder).delete(delete_folder))
