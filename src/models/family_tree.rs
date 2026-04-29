@@ -26,12 +26,21 @@ pub struct FamilyTree {
     /// Whether this is the owner's primary tree.
     #[serde(default)]
     pub is_primary: bool,
+    /// UUID of the team this tree is shared with, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UpdateFamilyTree {
     /// New human-readable display name.
     pub display_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SetTreeTeam {
+    /// UUID of the team to link, or `null` to unlink.
+    pub team_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, SurrealValue)]
