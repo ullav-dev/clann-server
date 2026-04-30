@@ -1706,3 +1706,637 @@ async fn test_get_endpoints_blocked_without_jwt() {
     let resp = app.oneshot(get("/api/persons")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
+
+// ── Life Events ───────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_create_life_event_returns_201() {
+    let app = setup().await;
+    let person_id = make_person(app.clone(), "Ada", "Female").await;
+
+    let response = app
+        .oneshot(post_json(
+            &format!("/api/persons/{}/life-events", person_id),
+            json!({
+                "name": "Graduation",
+                "event_type": "Graduation",
+                "date": "2000-06-15",
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = response_json(response).await;
+    assert_eq!(body["name"], "Graduation");
+    assert_eq!(body["event_type"], "Graduation");
+    assert_eq!(body["date"], "2000-06-15");
+    assert!(!body["id"].is_null());
+}
+
+#[tokio::test]
+async fn test_create_life_event_for_nonexistent_person_returns_404() {
+    let app = setup().await;
+    let response = app
+        .oneshot(post_json(
+            "/api/persons/nonexistent/life-events",
+            json!({"name": "Birth", "event_type": "Birth"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_list_life_events_empty() {
+    let app = setup().await;
+    let person_id = make_person(app.clone(), "Empty", "Male").await;
+
+    let response = app
+        .oneshot(get(&format!("/api/persons/{}/life-events", person_id)))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body, json!([]));
+}
+
+#[tokio::test]
+async fn test_list_life_events_returns_all_for_person() {
+    let app = setup().await;
+    let person_id = make_person(app.clone(), "Ada", "Female").await;
+
+    for (name, event_type) in [("Birth", "Birth"), ("Graduation", "Graduation")] {
+        let resp = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/persons/{}/life-events", person_id),
+                json!({"name": name, "event_type": event_type}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    let response = app
+        .oneshot(get(&format!("/api/persons/{}/life-events", person_id)))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body.as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn test_list_life_events_filter_by_created_by() {
+    let app = setup().await;
+    let person_id = make_person(app.clone(), "Ada", "Female").await;
+
+    app.clone()
+        .oneshot(post_json(
+            &format!("/api/persons/{}/life-events", person_id),
+            json!({"name": "Birth", "event_type": "Birth", "created_by": "alice"}),
+        ))
+        .await
+        .unwrap();
+    app.clone()
+        .oneshot(post_json(
+            &format!("/api/persons/{}/life-events", person_id),
+            json!({"name": "Death", "event_type": "Death", "created_by": "bob"}),
+        ))
+        .await
+        .unwrap();
+
+    let response = app
+        .oneshot(get(&format!(
+            "/api/persons/{}/life-events?created_by=alice",
+            person_id
+        )))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let events = body.as_array().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["name"], "Birth");
+}
+
+#[tokio::test]
+async fn test_get_life_event_by_id() {
+    let app = setup().await;
+    let person_id = make_person(app.clone(), "Ada", "Female").await;
+
+    let create_resp = app
+        .clone()
+        .oneshot(post_json(
+            &format!("/api/persons/{}/life-events", person_id),
+            json!({"name": "Marriage", "event_type": "Marriage", "date": "1990-05-20"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(create_resp.status(), StatusCode::CREATED);
+    let created = response_json(create_resp).await;
+    let event_id = record_id(&created);
+
+    let response = app
+        .oneshot(get(&format!("/api/life-events/{}", event_id)))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["name"], "Marriage");
+    assert_eq!(body["date"], "1990-05-20");
+}
+
+#[tokio::test]
+async fn test_get_life_event_not_found_returns_404() {
+    let app = setup().await;
+    let response = app
+        .oneshot(get("/api/life-events/nonexistent"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_update_life_event() {
+    let app = setup().await;
+    let person_id = make_person(app.clone(), "Ada", "Female").await;
+
+    let create_resp = app
+        .clone()
+        .oneshot(post_json(
+            &format!("/api/persons/{}/life-events", person_id),
+            json!({"name": "Birth", "event_type": "Birth"}),
+        ))
+        .await
+        .unwrap();
+    let created = response_json(create_resp).await;
+    let event_id = record_id(&created);
+
+    let response = app
+        .clone()
+        .oneshot(put_json(
+            &format!("/api/life-events/{}", event_id),
+            json!({
+                "name": "Birth Updated",
+                "event_type": "Birth",
+                "date": "1985-03-01",
+                "description": "Born in Dublin",
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["name"], "Birth Updated");
+    assert_eq!(body["date"], "1985-03-01");
+    assert_eq!(body["description"], "Born in Dublin");
+}
+
+#[tokio::test]
+async fn test_update_life_event_not_found_returns_404() {
+    let app = setup().await;
+    let response = app
+        .oneshot(put_json(
+            "/api/life-events/nonexistent",
+            json!({"name": "Ghost", "event_type": "Other"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_delete_life_event_returns_204() {
+    let app = setup().await;
+    let person_id = make_person(app.clone(), "Ada", "Female").await;
+
+    let create_resp = app
+        .clone()
+        .oneshot(post_json(
+            &format!("/api/persons/{}/life-events", person_id),
+            json!({"name": "Birth", "event_type": "Birth"}),
+        ))
+        .await
+        .unwrap();
+    let created = response_json(create_resp).await;
+    let event_id = record_id(&created);
+
+    let response = app
+        .clone()
+        .oneshot(delete(&format!("/api/life-events/{}", event_id)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    // Confirm gone
+    let response = app
+        .oneshot(get(&format!("/api/life-events/{}", event_id)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_delete_nonexistent_life_event_returns_404() {
+    let app = setup().await;
+    let response = app
+        .oneshot(delete("/api/life-events/phantom"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+// ── Research Notes ────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_create_research_note_returns_201() {
+    let app = setup().await;
+    let response = app
+        .oneshot(post_json(
+            "/api/notes",
+            json!({
+                "title": "Clann na Gael",
+                "description": "Notes on the O'Brien family",
+                "trees": [TEST_TREE],
+                "created_by": "researcher",
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = response_json(response).await;
+    assert_eq!(body["title"], "Clann na Gael");
+    assert_eq!(body["description"], "Notes on the O'Brien family");
+    assert!(!body["id"].is_null());
+}
+
+#[tokio::test]
+async fn test_list_research_notes_empty() {
+    let app = setup().await;
+    let response = app.oneshot(get("/api/notes")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body, json!([]));
+}
+
+#[tokio::test]
+async fn test_list_research_notes_filter_by_tree() {
+    let app = setup().await;
+
+    app.clone()
+        .oneshot(post_json(
+            "/api/trees",
+            json!({"name": "other-note-tree", "display_name": "Other", "owner": "user"}),
+        ))
+        .await
+        .unwrap();
+
+    app.clone()
+        .oneshot(post_json(
+            "/api/notes",
+            json!({"title": "Note A", "trees": [TEST_TREE]}),
+        ))
+        .await
+        .unwrap();
+    app.clone()
+        .oneshot(post_json(
+            "/api/notes",
+            json!({"title": "Note B", "trees": ["other-note-tree"]}),
+        ))
+        .await
+        .unwrap();
+
+    let response = app
+        .oneshot(get(&format!("/api/notes?tree={}", TEST_TREE)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let notes = body.as_array().unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0]["title"], "Note A");
+}
+
+#[tokio::test]
+async fn test_list_research_notes_filter_by_created_by() {
+    let app = setup().await;
+
+    app.clone()
+        .oneshot(post_json(
+            "/api/notes",
+            json!({"title": "Alice Note", "trees": [TEST_TREE], "created_by": "alice"}),
+        ))
+        .await
+        .unwrap();
+    app.clone()
+        .oneshot(post_json(
+            "/api/notes",
+            json!({"title": "Bob Note", "trees": [TEST_TREE], "created_by": "bob"}),
+        ))
+        .await
+        .unwrap();
+
+    let response = app
+        .oneshot(get("/api/notes?created_by=alice"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let notes = body.as_array().unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0]["title"], "Alice Note");
+}
+
+#[tokio::test]
+async fn test_get_research_note_by_id() {
+    let app = setup().await;
+
+    let create_resp = app
+        .clone()
+        .oneshot(post_json(
+            "/api/notes",
+            json!({"title": "Census 1911", "body": "Found in Roscommon", "trees": [TEST_TREE]}),
+        ))
+        .await
+        .unwrap();
+    let created = response_json(create_resp).await;
+    let note_id = record_id(&created);
+
+    let response = app
+        .oneshot(get(&format!("/api/notes/{}", note_id)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["title"], "Census 1911");
+    assert_eq!(body["body"], "Found in Roscommon");
+}
+
+#[tokio::test]
+async fn test_get_research_note_not_found() {
+    let app = setup().await;
+    let response = app.oneshot(get("/api/notes/nonexistent")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_update_research_note() {
+    let app = setup().await;
+
+    let create_resp = app
+        .clone()
+        .oneshot(post_json(
+            "/api/notes",
+            json!({"title": "Draft", "trees": [TEST_TREE]}),
+        ))
+        .await
+        .unwrap();
+    let created = response_json(create_resp).await;
+    let note_id = record_id(&created);
+
+    let response = app
+        .clone()
+        .oneshot(put_json(
+            &format!("/api/notes/{}", note_id),
+            json!({"title": "Revised Title", "body": "Updated body content", "trees": [TEST_TREE]}),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["title"], "Revised Title");
+    assert_eq!(body["body"], "Updated body content");
+}
+
+#[tokio::test]
+async fn test_update_research_note_not_found() {
+    let app = setup().await;
+    let response = app
+        .oneshot(put_json(
+            "/api/notes/nonexistent",
+            json!({"title": "Ghost Note"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_delete_research_note_returns_204() {
+    let app = setup().await;
+
+    let create_resp = app
+        .clone()
+        .oneshot(post_json(
+            "/api/notes",
+            json!({"title": "To Delete", "trees": [TEST_TREE]}),
+        ))
+        .await
+        .unwrap();
+    let created = response_json(create_resp).await;
+    let note_id = record_id(&created);
+
+    let response = app
+        .clone()
+        .oneshot(delete(&format!("/api/notes/{}", note_id)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    // Confirm gone
+    let response = app
+        .oneshot(get(&format!("/api/notes/{}", note_id)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_delete_research_note_not_found() {
+    let app = setup().await;
+    let response = app.oneshot(delete("/api/notes/phantom")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_set_note_folder() {
+    let app = setup().await;
+
+    let create_resp = app
+        .clone()
+        .oneshot(post_json(
+            "/api/notes",
+            json!({"title": "Note", "trees": [TEST_TREE]}),
+        ))
+        .await
+        .unwrap();
+    let created = response_json(create_resp).await;
+    let note_id = record_id(&created);
+
+    // Assign to a folder
+    let response = app
+        .clone()
+        .oneshot(patch_json(
+            &format!("/api/notes/{}/folder", note_id),
+            json!({"folder_id": "research_folder:abc123"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["folder_id"], "research_folder:abc123");
+
+    // Unfile from folder
+    let response = app
+        .clone()
+        .oneshot(patch_json(
+            &format!("/api/notes/{}/folder", note_id),
+            json!({"folder_id": null}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert!(body["folder_id"].is_null());
+}
+
+// ── User AI Settings ──────────────────────────────────────────────────────────
+
+fn put_json_auth(uri: &str, body: Value, token: &str) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+fn delete_auth(uri: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method("DELETE")
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn test_get_ai_settings_not_found_when_empty() {
+    let (app, _) = setup_with_auth().await;
+    let token = make_clann_jwt("individual", "active");
+    let response = app
+        .oneshot(get_auth("/api/ai-settings", &token))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_upsert_ai_settings_creates_new() {
+    let (app, _) = setup_with_auth().await;
+    let token = make_clann_jwt("individual", "active");
+
+    let response = app
+        .oneshot(put_json_auth(
+            "/api/ai-settings",
+            json!({
+                "provider": "anthropic",
+                "model": "claude-opus-4-7",
+                "encrypted_key": "encrypted_blob",
+                "iv": "iv_blob",
+                "auth_tag": "tag_blob",
+            }),
+            &token,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["provider"], "anthropic");
+    assert_eq!(body["model"], "claude-opus-4-7");
+    assert_eq!(body["username"], "test-user-id");
+}
+
+#[tokio::test]
+async fn test_upsert_ai_settings_is_idempotent() {
+    let (app, _) = setup_with_auth().await;
+    let token = make_clann_jwt("individual", "active");
+
+    // First PUT
+    app.clone()
+        .oneshot(put_json_auth(
+            "/api/ai-settings",
+            json!({"provider": "openai", "model": "gpt-4"}),
+            &token,
+        ))
+        .await
+        .unwrap();
+
+    // Second PUT with different model — should update, not create a duplicate
+    let response = app
+        .oneshot(put_json_auth(
+            "/api/ai-settings",
+            json!({"provider": "openai", "model": "gpt-4o"}),
+            &token,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["model"], "gpt-4o");
+}
+
+#[tokio::test]
+async fn test_delete_ai_settings_returns_204() {
+    let (app, _) = setup_with_auth().await;
+    let token = make_clann_jwt("individual", "active");
+
+    // Create settings first
+    app.clone()
+        .oneshot(put_json_auth(
+            "/api/ai-settings",
+            json!({"provider": "anthropic", "model": "claude-opus-4-7"}),
+            &token,
+        ))
+        .await
+        .unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(delete_auth("/api/ai-settings", &token))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    // Confirm gone
+    let response = app
+        .oneshot(get_auth("/api/ai-settings", &token))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_delete_ai_settings_when_none_is_noop() {
+    let (app, _) = setup_with_auth().await;
+    let token = make_clann_jwt("individual", "active");
+
+    // Delete with nothing stored — should still return 204
+    let response = app
+        .oneshot(delete_auth("/api/ai-settings", &token))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}

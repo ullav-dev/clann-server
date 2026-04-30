@@ -95,7 +95,10 @@ pub async fn list_trees(
     let trees: Vec<FamilyTree> = match (&filter.owner, &filter.team_id) {
         (_, Some(team_id)) => {
             // Only active team members may list a team's trees.
-            if !auth.teams.contains_key(team_id.as_str()) {
+            // In JWT mode (user_id non-empty) verify the team appears in claims;
+            // in dev mode (no JWT_SECRET, user_id empty) skip the check.
+            let is_member = auth.user_id.is_empty() || auth.teams.contains_key(team_id.as_str());
+            if !is_member {
                 return Err(AppError::Forbidden("Not a member of this team".to_string()));
             }
             db.query("SELECT * FROM family_tree WHERE team_id = $team_id")
@@ -246,18 +249,12 @@ pub async fn set_tree_team(
         .bind(("name", name.clone()))
         .await?
         .take(0)?;
-    existing.ok_or(AppError::NotFound)?;
-
-    db.query("UPDATE family_tree SET team_id = $team_id WHERE name = $name")
-        .bind(("team_id", payload.team_id))
-        .bind(("name", name.clone()))
-        .await?;
+    let existing = existing.ok_or(AppError::NotFound)?;
 
     let updated: Option<FamilyTree> = db
-        .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
-        .bind(("name", name))
-        .await?
-        .take(0)?;
+        .update(existing.id)
+        .merge(serde_json::json!({ "team_id": payload.team_id }))
+        .await?;
     Ok(Json(updated.ok_or(AppError::NotFound)?))
 }
 
