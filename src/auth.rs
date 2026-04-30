@@ -19,10 +19,18 @@ struct SubscriptionClaim {
 }
 
 #[derive(Debug, Deserialize)]
+struct TeamClaim {
+    pub role: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct RawClaims {
     pub sub: String,
     #[serde(default)]
     pub subscriptions: HashMap<String, SubscriptionClaim>,
+    /// Active team memberships keyed by team UUID string.
+    #[serde(default)]
+    pub teams: HashMap<String, TeamClaim>,
 }
 
 // ── ClannAuth — injected into every request via middleware ────────────────────
@@ -37,6 +45,8 @@ pub struct ClannAuth {
     pub user_id: String,
     /// Plan tier: "individual", "family", "professional", "enterprise".
     pub tier: String,
+    /// Active team memberships: map of team UUID → role ("owner"|"leader"|"member").
+    pub teams: HashMap<String, String>,
 }
 
 impl ClannAuth {
@@ -101,6 +111,7 @@ pub async fn jwt_middleware(
             ClannAuth {
                 user_id: String::new(),
                 tier: "enterprise".to_string(),
+                teams: HashMap::new(),
             }
         }
         Some(secret) => {
@@ -132,7 +143,12 @@ pub async fn jwt_middleware(
                                 }
                                 Some(sub) => sub.tier.clone(),
                             };
-                            ClannAuth { user_id: raw.sub, tier }
+                            let teams = raw
+                                .teams
+                                .into_iter()
+                                .map(|(id, claim)| (id, claim.role))
+                                .collect();
+                            ClannAuth { user_id: raw.sub, tier, teams }
                         }
                     }
                 }

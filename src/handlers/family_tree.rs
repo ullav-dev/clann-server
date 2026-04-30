@@ -9,13 +9,15 @@ use crate::{
     auth::ClannAuth,
     db::Db,
     error::{AppError, ErrorResponse},
-    models::family_tree::{CreateFamilyTree, FamilyTree, UpdateFamilyTree},
+    models::family_tree::{CreateFamilyTree, FamilyTree, SetTreeTeam, UpdateFamilyTree},
 };
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct TreeFilter {
     /// When present, only return trees with this owner.
     pub owner: Option<String>,
+    /// When present, return trees linked to this team UUID (caller must be a member).
+    pub team_id: Option<String>,
 }
 
 #[utoipa::path(
@@ -86,16 +88,30 @@ pub async fn create_tree(
 )]
 pub async fn list_trees(
     State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
     Query(filter): Query<TreeFilter>,
 ) -> Result<Json<Vec<FamilyTree>>, AppError> {
     let db = db.lock().await;
-    let trees: Vec<FamilyTree> = match filter.owner {
-        Some(ref owner) => db
+    let trees: Vec<FamilyTree> = match (&filter.owner, &filter.team_id) {
+        (_, Some(team_id)) => {
+            // Only active team members may list a team's trees.
+            // In JWT mode (user_id non-empty) verify the team appears in claims;
+            // in dev mode (no JWT_SECRET, user_id empty) skip the check.
+            let is_member = auth.user_id.is_empty() || auth.teams.contains_key(team_id.as_str());
+            if !is_member {
+                return Err(AppError::Forbidden("Not a member of this team".to_string()));
+            }
+            db.query("SELECT * FROM family_tree WHERE team_id = $team_id")
+                .bind(("team_id", team_id.clone()))
+                .await?
+                .take(0)?
+        }
+        (Some(owner), None) => db
             .query("SELECT * FROM family_tree WHERE owner = $owner")
             .bind(("owner", owner.clone()))
             .await?
             .take(0)?,
-        None => db.select("family_tree").await?,
+        (None, None) => db.select("family_tree").await?,
     };
     Ok(Json(trees))
 }
@@ -205,6 +221,40 @@ pub async fn update_tree(
         .bind(("name", name))
         .await?
         .take(0)?;
+    Ok(Json(updated.ok_or(AppError::NotFound)?))
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/trees/{name}/team",
+    params(
+        ("name" = String, Path, description = "Unique tree name")
+    ),
+    request_body = SetTreeTeam,
+    responses(
+        (status = 200, description = "Tree team association updated", body = FamilyTree),
+        (status = 404, description = "Family tree not found", body = ErrorResponse),
+    ),
+    tag = "trees"
+)]
+pub async fn set_tree_team(
+    State(db): State<Db>,
+    Path(name): Path<String>,
+    Json(payload): Json<SetTreeTeam>,
+) -> Result<Json<FamilyTree>, AppError> {
+    let db = db.lock().await;
+
+    let existing: Option<FamilyTree> = db
+        .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
+        .bind(("name", name.clone()))
+        .await?
+        .take(0)?;
+    let existing = existing.ok_or(AppError::NotFound)?;
+
+    let updated: Option<FamilyTree> = db
+        .update(existing.id)
+        .merge(serde_json::json!({ "team_id": payload.team_id }))
+        .await?;
     Ok(Json(updated.ok_or(AppError::NotFound)?))
 }
 

@@ -5,7 +5,20 @@ on:
     branches: main
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test
+
   docker:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

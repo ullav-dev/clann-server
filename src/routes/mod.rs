@@ -8,7 +8,7 @@ use crate::{
     auth::jwt_middleware,
     db::Db,
     handlers::{
-        family_tree::{create_tree, delete_tree, get_tree, list_trees, set_primary_tree, update_tree},
+        family_tree::{create_tree, delete_tree, get_tree, list_trees, set_primary_tree, set_tree_team, update_tree},
         image::{get_image, get_life_image, upload_image, upload_life_image},
         life_event::{create_life_event, delete_life_event, get_life_event, list_life_events, update_life_event},
         person::{add_person_to_tree, create_person, delete_person, get_person, list_persons, remove_person_from_tree, update_person},
@@ -18,7 +18,7 @@ use crate::{
         },
         chat_session::{create_session, delete_session, list_sessions, list_session_messages, append_message},
         research_folder::{create_folder, delete_folder, list_folders, rename_folder},
-        research_note::{create_research_note, delete_research_note, get_research_note, list_research_notes, set_note_folder, update_research_note},
+        research_note::{create_note_reply, create_research_note, delete_research_note, get_research_note, list_note_replies, list_research_notes, set_note_folder, update_research_note},
         user_ai_settings::{delete_ai_settings, get_ai_settings, upsert_ai_settings},
     },
     openapi::{openapi_json, swagger_ui},
@@ -49,6 +49,7 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
         .route("/api/trees", post(create_tree).get(list_trees))
         .route("/api/trees/{name}", get(get_tree).patch(update_tree).delete(delete_tree))
         .route("/api/trees/{name}/set-primary", patch(set_primary_tree))
+        .route("/api/trees/{name}/team", patch(set_tree_team))
         // Persons
         .route("/api/persons", post(create_person).get(list_persons))
         .route(
@@ -90,6 +91,7 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
             get(get_research_note).put(update_research_note).delete(delete_research_note),
         )
         .route("/api/notes/{note_id}/folder", patch(set_note_folder))
+        .route("/api/notes/{note_id}/replies", get(list_note_replies).post(create_note_reply))
         // Research Folders
         .route("/api/folders", post(create_folder).get(list_folders))
         .route("/api/folders/{id}", patch(rename_folder).delete(delete_folder))

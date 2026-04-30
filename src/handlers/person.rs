@@ -108,12 +108,48 @@ pub async fn create_person(
 )]
 pub async fn list_persons(
     State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
     Query(filter): Query<PersonFilter>,
 ) -> Result<Json<Vec<Person>>, AppError> {
     let db = db.lock().await;
     let creator_filter = filter.created_by.as_deref().filter(|c| !is_admin(c));
 
-    let persons: Vec<Person> = match (creator_filter, filter.tree.as_deref()) {
+    // When a specific tree is requested, check whether this is a team member
+    // accessing a tree they don't own. In JWT mode the team UUID is confirmed
+    // against auth.teams; in dev mode (auth.user_id empty, teams always empty)
+    // we fall back to the tree-owner field as the authority.
+    let effective_creator: Option<&str> = if let (Some(tree_name), Some(creator)) =
+        (filter.tree.as_deref(), creator_filter)
+    {
+        let tree: Option<FamilyTree> = db
+            .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
+            .bind(("name", tree_name.to_string()))
+            .await?
+            .take(0)?;
+
+        let bypass = match &tree {
+            None => false,
+            Some(t) => {
+                let is_team_linked = t.team_id.is_some();
+                let is_not_owner = t.owner != creator;
+                if !is_team_linked || !is_not_owner {
+                    false
+                } else if auth.user_id.is_empty() {
+                    // Dev mode: no JWT validation — trust tree-owner check
+                    true
+                } else {
+                    // JWT mode: require the team to appear in the caller's claims
+                    t.team_id.as_ref().map_or(false, |tid| auth.teams.contains_key(tid))
+                }
+            }
+        };
+
+        if bypass { None } else { Some(creator) }
+    } else {
+        creator_filter
+    };
+
+    let persons: Vec<Person> = match (effective_creator, filter.tree.as_deref()) {
         (Some(creator), Some(tree)) => db
             .query("SELECT * FROM person WHERE created_by = $creator AND $tree IN trees")
             .bind(("creator", creator.to_string()))
