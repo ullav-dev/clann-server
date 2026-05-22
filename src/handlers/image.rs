@@ -17,25 +17,8 @@ use crate::{
 };
 
 const MAX_IMAGE_BYTES: usize = 2 * 1024 * 1024; // 2 MB hard cap for profile pictures
+const MAX_LIFE_IMAGE_BYTES: usize = 10 * 1024 * 1024; // 10 MB hard cap for life story images
 
-/// Maps a MIME type to its canonical file extension.
-/// Returns `None` for unsupported types.
-fn ext_for_mime(mime: &str) -> Option<&'static str> {
-    match mime {
-        "image/jpeg" | "image/jpg" => Some("jpg"),
-        "image/png" => Some("png"),
-        "image/gif" => Some("gif"),
-        "image/webp" => Some("webp"),
-        "video/mp4" => Some("mp4"),
-        "video/quicktime" => Some("mov"),
-        "video/webm" => Some("webm"),
-        "audio/mpeg" | "audio/mp3" => Some("mp3"),
-        "audio/wav" | "audio/wave" | "audio/x-wav" => Some("wav"),
-        "audio/ogg" => Some("ogg"),
-        "application/pdf" => Some("pdf"),
-        _ => None,
-    }
-}
 
 /// Maps a file extension to its MIME type for serving.
 fn mime_for_ext(ext: &str) -> &'static str {
@@ -56,7 +39,7 @@ fn mime_for_ext(ext: &str) -> &'static str {
 }
 
 /// Queries total media bytes used by `user_id` across all their persons.
-async fn total_media_bytes(db: &crate::db::DbConn, user_id: &str) -> Result<i64, crate::error::AppError> {
+async fn total_media_bytes(db: &crate::state::AppStateConn, user_id: &str) -> Result<i64, crate::error::AppError> {
     let result: Option<i64> = db
         .query("RETURN math::sum((SELECT VALUE (image_bytes ?? 0) + (life_image_bytes ?? 0) FROM person WHERE created_by = $uid))")
         .bind(("uid", user_id.to_string()))
@@ -86,14 +69,14 @@ async fn total_media_bytes(db: &crate::db::DbConn, user_id: &str) -> Result<i64,
     tag = "persons"
 )]
 pub async fn upload_image(
-    State(db): State<Db>,
+    State(state): State<AppState>,
     Extension(upload_dir): Extension<String>,
     Extension(auth): Extension<ClannAuth>,
     Path(id): Path<String>,
     Query(filter): Query<PersonFilter>,
     mut multipart: Multipart,
 ) -> Result<StatusCode, AppError> {
-    let person: Option<Person> = db.lock().await.select(("person", id.as_str())).await?;
+    let person: Option<Person> = state.db.lock().await.select(("person", id.as_str())).await?;
     let person = person.ok_or(AppError::NotFound)?;
     check_ownership(&person, &filter.created_by)?;
 
@@ -139,7 +122,7 @@ pub async fn upload_image(
 
         // Check storage quota: total used - old image_bytes + new_size
         if let Some(limit) = auth.storage_limit_bytes() {
-            let db_conn = db.lock().await;
+            let db_conn = state.db.lock().await;
             let total = total_media_bytes(&db_conn, &auth.user_id).await?;
             let old_bytes = person.image_bytes.unwrap_or(0);
             if total - old_bytes + new_size > limit {
@@ -190,11 +173,11 @@ pub async fn upload_image(
     tag = "persons"
 )]
 pub async fn get_image(
-    State(db): State<Db>,
+    State(state): State<AppState>,
     Extension(upload_dir): Extension<String>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let person: Option<Person> = db.lock().await.select(("person", id.as_str())).await?;
+    let person: Option<Person> = state.db.lock().await.select(("person", id.as_str())).await?;
     let person = person.ok_or(AppError::NotFound)?;
 
     let filename = person.image_path.ok_or(AppError::NotFound)?;
@@ -223,9 +206,7 @@ pub async fn get_image(
     request_body(
         content = String,
         content_type = "multipart/form-data",
-        description = "Media file field named `image`. Individual/Family: JPG or PNG only. \
-                       Professional/Enterprise: also accepts video (MP4, MOV, WebM), \
-                       audio (MP3, WAV, OGG), and PDF."
+        description = "Image file field named `image`. Accepts JPG, PNG, GIF, or WebP up to 10 MB."
     ),
     responses(
         (status = 204, description = "Life story media uploaded and associated with the person"),
@@ -236,14 +217,14 @@ pub async fn get_image(
     tag = "persons"
 )]
 pub async fn upload_life_image(
-    State(db): State<Db>,
+    State(state): State<AppState>,
     Extension(upload_dir): Extension<String>,
     Extension(auth): Extension<ClannAuth>,
     Path(id): Path<String>,
     Query(filter): Query<PersonFilter>,
     mut multipart: Multipart,
 ) -> Result<StatusCode, AppError> {
-    let person: Option<Person> = db.lock().await.select(("person", id.as_str())).await?;
+    let person: Option<Person> = state.db.lock().await.select(("person", id.as_str())).await?;
     let person = person.ok_or(AppError::NotFound)?;
     check_ownership(&person, &filter.created_by)?;
 
@@ -258,24 +239,28 @@ pub async fn upload_life_image(
             .ok_or_else(|| AppError::BadRequest("Missing content-type on image field".to_string()))?
             .to_string();
 
-        // Enforce plan-based media type restriction.
-        if !auth.life_media_type_allowed(&content_type) {
-            return Err(AppError::Forbidden(format!(
-                "Your plan does not allow `{content_type}` uploads. \
-                 Upgrade to Professional for video, audio, and document support."
-            )));
-        }
-
-        let ext = ext_for_mime(&content_type).ok_or_else(|| {
-            AppError::BadRequest(format!(
-                "Unsupported media type `{content_type}`."
-            ))
-        })?;
+        let ext = match content_type.as_str() {
+            "image/jpeg" | "image/jpg" => "jpg",
+            "image/png" => "png",
+            "image/gif" => "gif",
+            "image/webp" => "webp",
+            other => {
+                return Err(AppError::BadRequest(format!(
+                    "Unsupported image type `{other}`. Only JPG, PNG, GIF and WebP are accepted for life story images."
+                )));
+            }
+        };
 
         let mut bytes: Vec<u8> = Vec::new();
         let mut stream = field;
         while let Some(chunk) = stream.chunk().await.map_err(|e| AppError::BadRequest(e.to_string()))? {
             bytes.extend_from_slice(&chunk);
+            if bytes.len() > MAX_LIFE_IMAGE_BYTES {
+                return Err(AppError::BadRequest(format!(
+                    "Image exceeds the 10 MB size limit ({} bytes received so far)",
+                    bytes.len()
+                )));
+            }
         }
 
         if bytes.is_empty() {
@@ -286,7 +271,7 @@ pub async fn upload_life_image(
 
         // Check storage quota: total used - old life_image_bytes + new_size
         if let Some(limit) = auth.storage_limit_bytes() {
-            let db_conn = db.lock().await;
+            let db_conn = state.db.lock().await;
             let total = total_media_bytes(&db_conn, &auth.user_id).await?;
             let old_bytes = person.life_image_bytes.unwrap_or(0);
             if total - old_bytes + new_size > limit {
@@ -301,8 +286,8 @@ pub async fn upload_life_image(
             AppError::BadRequest(format!("Failed to create upload directory: {e}"))
         })?;
 
-        // Remove any previous life media for this person (all known extensions).
-        for old_ext in ["jpg", "jpeg", "png", "gif", "webp", "mp4", "mov", "webm", "mp3", "wav", "ogg", "pdf"] {
+        // Remove any previous life story image for this person (all accepted extensions).
+        for old_ext in ["jpg", "jpeg", "png", "gif", "webp"] {
             let old_path = format!("{upload_dir}/{id}_life.{old_ext}");
             let _ = fs::remove_file(&old_path).await;
         }
@@ -338,11 +323,11 @@ pub async fn upload_life_image(
     tag = "persons"
 )]
 pub async fn get_life_image(
-    State(db): State<Db>,
+    State(state): State<AppState>,
     Extension(upload_dir): Extension<String>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let person: Option<Person> = db.lock().await.select(("person", id.as_str())).await?;
+    let person: Option<Person> = state.db.lock().await.select(("person", id.as_str())).await?;
     let person = person.ok_or(AppError::NotFound)?;
 
     let filename = person.life_image_path.ok_or(AppError::NotFound)?;
