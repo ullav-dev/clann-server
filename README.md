@@ -300,6 +300,8 @@ Persists AI Research Assistant conversations, scoped per user and family tree. S
 
 ## Production deployment
 
+> **macOS:** Uses [Colima](https://github.com/abiosoft/colima) instead of Docker Desktop. Run `colima start` before any Docker commands.
+
 The server is distributed as a Docker image at `ghcr.io/ullav-dev/clann-server:latest`.
 
 ### Prerequisites

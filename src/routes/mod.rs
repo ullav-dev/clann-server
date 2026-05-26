@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use axum::{
     extract::DefaultBodyLimit,
     middleware,
@@ -11,10 +9,6 @@ use crate::{
     auth::jwt_middleware,
     db::Db,
     handlers::{
-        auth::{
-            confirm_email, login, password_reset_confirm, password_reset_request, register,
-            AuthConfig,
-        },
         family_tree::{create_tree, delete_tree, get_tree, list_trees, set_primary_tree, set_tree_team, update_tree},
         image::{get_image, get_life_image, upload_image, upload_life_image},
         life_event::{create_life_event, delete_life_event, get_life_event, list_life_events, update_life_event},
@@ -31,7 +25,7 @@ use crate::{
     openapi::{openapi_json, swagger_ui},
 };
 
-pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: Option<String>, auth_service_url: String) -> Router {
+pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: Option<String>) -> Router {
     let mut router = Router::new();
 
     if enable_docs {
@@ -45,17 +39,6 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
         let secret = secret.clone();
         async move { jwt_middleware(req, next, secret).await }
     });
-
-    let auth_config = Arc::new(AuthConfig::new(auth_service_url));
-
-    // Auth proxy routes — unauthenticated, forward to ullav-user-management.
-    let auth_routes = Router::new()
-        .route("/api/auth/login", post(login))
-        .route("/api/auth/register", post(register))
-        .route("/api/auth/confirm-email", post(confirm_email))
-        .route("/api/auth/password-reset/request", post(password_reset_request))
-        .route("/api/auth/password-reset/confirm", post(password_reset_confirm))
-        .layer(Extension(auth_config));
 
     // Image GET routes are public — browsers fetch <img src> without Authorization headers.
     let public_routes = Router::new()
@@ -128,7 +111,6 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
         .layer(auth_layer);
 
     router
-        .merge(auth_routes)
         .merge(public_routes)
         .merge(protected_routes)
         .layer(Extension(upload_dir))
