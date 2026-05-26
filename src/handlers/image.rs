@@ -39,7 +39,7 @@ fn mime_for_ext(ext: &str) -> &'static str {
 }
 
 /// Queries total media bytes used by `user_id` across all their persons.
-async fn total_media_bytes(db: &crate::state::AppStateConn, user_id: &str) -> Result<i64, crate::error::AppError> {
+async fn total_media_bytes(db: &crate::db::DbConn, user_id: &str) -> Result<i64, crate::error::AppError> {
     let result: Option<i64> = db
         .query("RETURN math::sum((SELECT VALUE (image_bytes ?? 0) + (life_image_bytes ?? 0) FROM person WHERE created_by = $uid))")
         .bind(("uid", user_id.to_string()))
@@ -69,14 +69,14 @@ async fn total_media_bytes(db: &crate::state::AppStateConn, user_id: &str) -> Re
     tag = "persons"
 )]
 pub async fn upload_image(
-    State(state): State<AppState>,
+    State(db): State<Db>,
     Extension(upload_dir): Extension<String>,
     Extension(auth): Extension<ClannAuth>,
     Path(id): Path<String>,
     Query(filter): Query<PersonFilter>,
     mut multipart: Multipart,
 ) -> Result<StatusCode, AppError> {
-    let person: Option<Person> = state.db.lock().await.select(("person", id.as_str())).await?;
+    let person: Option<Person> = db.lock().await.select(("person", id.as_str())).await?;
     let person = person.ok_or(AppError::NotFound)?;
     check_ownership(&person, &filter.created_by)?;
 
@@ -122,7 +122,7 @@ pub async fn upload_image(
 
         // Check storage quota: total used - old image_bytes + new_size
         if let Some(limit) = auth.storage_limit_bytes() {
-            let db_conn = state.db.lock().await;
+            let db_conn = db.lock().await;
             let total = total_media_bytes(&db_conn, &auth.user_id).await?;
             let old_bytes = person.image_bytes.unwrap_or(0);
             if total - old_bytes + new_size > limit {
@@ -173,11 +173,11 @@ pub async fn upload_image(
     tag = "persons"
 )]
 pub async fn get_image(
-    State(state): State<AppState>,
+    State(db): State<Db>,
     Extension(upload_dir): Extension<String>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let person: Option<Person> = state.db.lock().await.select(("person", id.as_str())).await?;
+    let person: Option<Person> = db.lock().await.select(("person", id.as_str())).await?;
     let person = person.ok_or(AppError::NotFound)?;
 
     let filename = person.image_path.ok_or(AppError::NotFound)?;
@@ -217,14 +217,14 @@ pub async fn get_image(
     tag = "persons"
 )]
 pub async fn upload_life_image(
-    State(state): State<AppState>,
+    State(db): State<Db>,
     Extension(upload_dir): Extension<String>,
     Extension(auth): Extension<ClannAuth>,
     Path(id): Path<String>,
     Query(filter): Query<PersonFilter>,
     mut multipart: Multipart,
 ) -> Result<StatusCode, AppError> {
-    let person: Option<Person> = state.db.lock().await.select(("person", id.as_str())).await?;
+    let person: Option<Person> = db.lock().await.select(("person", id.as_str())).await?;
     let person = person.ok_or(AppError::NotFound)?;
     check_ownership(&person, &filter.created_by)?;
 
@@ -271,7 +271,7 @@ pub async fn upload_life_image(
 
         // Check storage quota: total used - old life_image_bytes + new_size
         if let Some(limit) = auth.storage_limit_bytes() {
-            let db_conn = state.db.lock().await;
+            let db_conn = db.lock().await;
             let total = total_media_bytes(&db_conn, &auth.user_id).await?;
             let old_bytes = person.life_image_bytes.unwrap_or(0);
             if total - old_bytes + new_size > limit {
@@ -323,11 +323,11 @@ pub async fn upload_life_image(
     tag = "persons"
 )]
 pub async fn get_life_image(
-    State(state): State<AppState>,
+    State(db): State<Db>,
     Extension(upload_dir): Extension<String>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let person: Option<Person> = state.db.lock().await.select(("person", id.as_str())).await?;
+    let person: Option<Person> = db.lock().await.select(("person", id.as_str())).await?;
     let person = person.ok_or(AppError::NotFound)?;
 
     let filename = person.life_image_path.ok_or(AppError::NotFound)?;
