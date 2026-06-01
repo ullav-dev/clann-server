@@ -13,6 +13,7 @@ use crate::{
     db::Db,
     error::AppError,
     handlers::person::{PersonFilter, check_ownership},
+    models::family_tree::FamilyTree,
     models::person::Person,
 };
 
@@ -331,6 +332,157 @@ pub async fn get_life_image(
     let person = person.ok_or(AppError::NotFound)?;
 
     let filename = person.life_image_path.ok_or(AppError::NotFound)?;
+    let ext = filename.rsplit('.').next().unwrap_or("jpg");
+    let content_type = mime_for_ext(ext);
+
+    let file_path = format!("{upload_dir}/{filename}");
+    let bytes = fs::read(&file_path).await.map_err(|_| AppError::NotFound)?;
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_LENGTH, bytes.len())
+        .body(Body::from(bytes))
+        .unwrap();
+
+    Ok(response)
+}
+
+const MAX_TREE_IMAGE_BYTES: usize = 2 * 1024 * 1024; // 2 MB for tree avatars
+
+#[utoipa::path(
+    post,
+    path = "/api/trees/{name}/image",
+    params(
+        ("name" = String, Path, description = "Unique tree name slug")
+    ),
+    request_body(
+        content = String,
+        content_type = "multipart/form-data",
+        description = "Image file field named `image`. Accepts JPG or PNG, maximum 2 MB."
+    ),
+    responses(
+        (status = 204, description = "Avatar uploaded and associated with the tree"),
+        (status = 400, description = "Invalid file type, size exceeded, or missing field", body = crate::error::ErrorResponse),
+        (status = 404, description = "Tree not found", body = crate::error::ErrorResponse),
+    ),
+    tag = "trees"
+)]
+pub async fn upload_tree_image(
+    State(db): State<Db>,
+    Extension(upload_dir): Extension<String>,
+    Path(name): Path<String>,
+    mut multipart: Multipart,
+) -> Result<StatusCode, AppError> {
+    let trees: Vec<FamilyTree> = db
+        .lock()
+        .await
+        .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
+        .bind(("name", name.clone()))
+        .await?
+        .take(0)?;
+    let tree = trees.into_iter().next().ok_or(AppError::NotFound)?;
+
+    while let Some(field) = multipart.next_field().await.map_err(|e| AppError::BadRequest(e.to_string()))? {
+        let field_name = field.name().unwrap_or("").to_string();
+        if field_name != "image" {
+            continue;
+        }
+
+        let content_type = field
+            .content_type()
+            .ok_or_else(|| AppError::BadRequest("Missing content-type on image field".to_string()))?
+            .to_string();
+
+        let ext = match content_type.as_str() {
+            "image/jpeg" | "image/jpg" => "jpg",
+            "image/png" => "png",
+            other => {
+                return Err(AppError::BadRequest(format!(
+                    "Unsupported image type `{other}`. Only JPG and PNG are accepted for tree avatars."
+                )));
+            }
+        };
+
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut stream = field;
+        while let Some(chunk) = stream.chunk().await.map_err(|e| AppError::BadRequest(e.to_string()))? {
+            bytes.extend_from_slice(&chunk);
+            if bytes.len() > MAX_TREE_IMAGE_BYTES {
+                return Err(AppError::BadRequest(format!(
+                    "Image exceeds the 2 MB size limit ({} bytes received so far)",
+                    bytes.len()
+                )));
+            }
+        }
+
+        if bytes.is_empty() {
+            return Err(AppError::BadRequest("Image field is empty".to_string()));
+        }
+
+        fs::create_dir_all(&upload_dir).await.map_err(|e| {
+            AppError::BadRequest(format!("Failed to create upload directory: {e}"))
+        })?;
+
+        use surrealdb::types::RecordIdKey;
+        let id_key = match &tree.id.key {
+            RecordIdKey::String(k) => k.clone(),
+            other => format!("{other:?}"),
+        };
+
+        for old_ext in ["jpg", "png"] {
+            let old_path = format!("{upload_dir}/tree_{id_key}.{old_ext}");
+            let _ = fs::remove_file(&old_path).await;
+        }
+
+        let filename = format!("tree_{id_key}.{ext}");
+        let file_path = format!("{upload_dir}/{filename}");
+        fs::write(&file_path, &bytes).await.map_err(|e| {
+            AppError::BadRequest(format!("Failed to write image: {e}"))
+        })?;
+
+        let _: Option<FamilyTree> = db
+            .lock()
+            .await
+            .query("UPDATE family_tree SET image_path = $image_path WHERE name = $name")
+            .bind(("image_path", filename))
+            .bind(("name", name.clone()))
+            .await?
+            .take(0)?;
+
+        return Ok(StatusCode::NO_CONTENT);
+    }
+
+    Err(AppError::BadRequest("No `image` field found in multipart body".to_string()))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/trees/{name}/image",
+    params(
+        ("name" = String, Path, description = "Unique tree name slug")
+    ),
+    responses(
+        (status = 200, description = "Avatar image file (JPEG or PNG)", content_type = "image/jpeg"),
+        (status = 404, description = "Tree not found or no avatar uploaded", body = crate::error::ErrorResponse),
+    ),
+    tag = "trees"
+)]
+pub async fn get_tree_image(
+    State(db): State<Db>,
+    Extension(upload_dir): Extension<String>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let trees: Vec<FamilyTree> = db
+        .lock()
+        .await
+        .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
+        .bind(("name", name))
+        .await?
+        .take(0)?;
+    let tree = trees.into_iter().next().ok_or(AppError::NotFound)?;
+
+    let filename = tree.image_path.ok_or(AppError::NotFound)?;
     let ext = filename.rsplit('.').next().unwrap_or("jpg");
     let content_type = mime_for_ext(ext);
 
