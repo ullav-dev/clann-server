@@ -29,6 +29,9 @@ pub struct FamilyTree {
     /// UUID of the team this tree is shared with, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_id: Option<String>,
+    /// Filename of the tree avatar image (e.g. coat of arms), if uploaded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_path: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
