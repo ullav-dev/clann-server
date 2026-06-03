@@ -21,6 +21,9 @@ struct SubscriptionClaim {
 #[derive(Debug, Deserialize)]
 struct TeamClaim {
     pub role: String,
+    /// Per-member product roles: product_slug → role (e.g. "clann" → "owner"|"member").
+    #[serde(default)]
+    pub product_roles: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,8 +48,23 @@ pub struct ClannAuth {
     pub user_id: String,
     /// Plan tier: "individual", "family", "professional", "enterprise".
     pub tier: String,
-    /// Active team memberships: map of team UUID → role ("owner"|"leader"|"member").
+    /// Active team memberships: map of team UUID → positional role ("owner"|"leader"|"member").
     pub teams: HashMap<String, String>,
+    /// Per-member Clann product roles: map of team UUID → "owner"|"member".
+    /// Empty for tokens issued before product roles were added (pre-UUM migration 014).
+    pub clann_roles: HashMap<String, String>,
+}
+
+impl ClannAuth {
+    /// Returns the user's Clann product role for the given team UUID, if any.
+    pub fn clann_role_for_team(&self, team_id: &str) -> Option<&str> {
+        self.clann_roles.get(team_id).map(|s| s.as_str())
+    }
+
+    /// Returns true if the user has any form of Clann access in the given team.
+    pub fn has_clann_access_for_team(&self, team_id: &str) -> bool {
+        self.teams.contains_key(team_id)
+    }
 }
 
 impl ClannAuth {
@@ -112,6 +130,7 @@ pub async fn jwt_middleware(
                 user_id: String::new(),
                 tier: "enterprise".to_string(),
                 teams: HashMap::new(),
+                clann_roles: HashMap::new(),
             }
         }
         Some(secret) => {
@@ -143,12 +162,15 @@ pub async fn jwt_middleware(
                                 }
                                 Some(sub) => sub.tier.clone(),
                             };
-                            let teams = raw
-                                .teams
-                                .into_iter()
-                                .map(|(id, claim)| (id, claim.role))
-                                .collect();
-                            ClannAuth { user_id: raw.sub, tier, teams }
+                            let mut teams = HashMap::new();
+                            let mut clann_roles = HashMap::new();
+                            for (id, claim) in raw.teams {
+                                if let Some(role) = claim.product_roles.get("clann") {
+                                    clann_roles.insert(id.clone(), role.clone());
+                                }
+                                teams.insert(id, claim.role);
+                            }
+                            ClannAuth { user_id: raw.sub, tier, teams, clann_roles }
                         }
                     }
                 }
