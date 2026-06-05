@@ -1,6 +1,6 @@
 use crate::models::person::Sex;
 use serde::{Deserialize, Serialize};
-use surrealdb::types::{RecordId, RecordIdKey, SurrealValue};
+use surrealdb::types::{RecordId, RecordIdKey};
 use utoipa::ToSchema;
 
 fn serialize_record_id<S: serde::Serializer>(id: &RecordId, s: S) -> Result<S::Ok, S::Error> {
@@ -15,7 +15,7 @@ use super::person::Person;
 
 /// The nature of a parent–child relationship.
 /// Defaults to `birth` for existing edges that pre-date this field.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, PartialEq, SurrealValue)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Pedigree {
     #[default]
@@ -23,6 +23,28 @@ pub enum Pedigree {
     Adopted,
     Step,
     Foster,
+}
+
+impl Pedigree {
+    /// String used when writing the value into the SurrealDB edge.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            Pedigree::Birth => "birth",
+            Pedigree::Adopted => "adopted",
+            Pedigree::Step => "step",
+            Pedigree::Foster => "foster",
+        }
+    }
+
+    /// Parse back from the stored string; unknown values default to Birth.
+    pub fn from_db_str(s: &str) -> Self {
+        match s {
+            "adopted" => Pedigree::Adopted,
+            "step" => Pedigree::Step,
+            "foster" => Pedigree::Foster,
+            _ => Pedigree::Birth,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
