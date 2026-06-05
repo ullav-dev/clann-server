@@ -21,15 +21,6 @@ use crate::{
     },
 };
 
-fn pedigree_str(p: &Pedigree) -> &'static str {
-    match p {
-        Pedigree::Birth => "birth",
-        Pedigree::Adopted => "adopted",
-        Pedigree::Step => "step",
-        Pedigree::Foster => "foster",
-    }
-}
-
 /// Parse a "table:id" string into a SurrealDB `RecordId`.
 /// Binding RecordId directly avoids needing `type::thing()` in SurrealQL,
 /// which is unsupported in the embedded engine.
@@ -88,7 +79,7 @@ pub async fn add_relationship(
 
     match payload.rel_type {
         RelationshipType::Father => {
-            let ped = pedigree_str(&payload.pedigree);
+            let ped = payload.pedigree.as_db_str();
             db.query("RELATE $from->has_father->$to CONTENT { pedigree: $ped }")
                 .bind(("from", from))
                 .bind(("to", to))
@@ -96,7 +87,7 @@ pub async fn add_relationship(
                 .await?;
         }
         RelationshipType::Mother => {
-            let ped = pedigree_str(&payload.pedigree);
+            let ped = payload.pedigree.as_db_str();
             db.query("RELATE $from->has_mother->$to CONTENT { pedigree: $ped }")
                 .bind(("from", from))
                 .bind(("to", to))
@@ -385,10 +376,12 @@ async fn fetch_siblings(db: &DbConn, person_id: &RecordId) -> Result<Vec<Person>
 /// Fetch parents with pedigree from a `has_father` or `has_mother` edge table.
 /// Edges that pre-date the `pedigree` field default to `Pedigree::Birth`.
 async fn fetch_parent_edges(db: &DbConn, person_id: &RecordId, rel: &str) -> Result<Vec<ParentInfo>, AppError> {
+    // Use Option<String> for pedigree — SurrealValue enum deserialization is unreliable;
+    // reading as a plain string and converting manually matches how sibling_type/spouse_from work.
     #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
     struct ParentEdgeRow {
         person: Person,
-        pedigree: Option<Pedigree>,
+        pedigree: Option<String>,
     }
 
     let query = format!(
@@ -409,7 +402,10 @@ async fn fetch_parent_edges(db: &DbConn, person_id: &RecordId, rel: &str) -> Res
     let rows: Vec<ParentEdgeRow> = res.take(0)?;
     Ok(rows
         .into_iter()
-        .map(|r| ParentInfo { person: r.person, pedigree: r.pedigree.unwrap_or(Pedigree::Birth) })
+        .map(|r| ParentInfo {
+            person: r.person,
+            pedigree: r.pedigree.as_deref().map(Pedigree::from_db_str).unwrap_or(Pedigree::Birth),
+        })
         .collect())
 }
 
