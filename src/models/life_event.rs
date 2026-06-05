@@ -22,6 +22,7 @@ pub enum EventType {
     Immigration,
     Emigration,
     Military,
+    NameChange,
     Other,
 }
 
