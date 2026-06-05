@@ -4,6 +4,7 @@ DEFINE FIELD IF NOT EXISTS display_name ON TABLE family_tree TYPE string;
 DEFINE FIELD IF NOT EXISTS owner        ON TABLE family_tree TYPE string;
 DEFINE FIELD IF NOT EXISTS is_primary   ON TABLE family_tree TYPE bool DEFAULT false;
 DEFINE FIELD IF NOT EXISTS team_id      ON TABLE family_tree TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS image_path   ON TABLE family_tree TYPE option<string>;
 DEFINE INDEX IF NOT EXISTS idx_tree_name  ON TABLE family_tree COLUMNS name UNIQUE;
 DEFINE INDEX IF NOT EXISTS idx_tree_owner ON TABLE family_tree COLUMNS owner;
 
