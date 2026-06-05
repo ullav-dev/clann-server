@@ -1,6 +1,6 @@
 use crate::models::person::Sex;
 use serde::{Deserialize, Serialize};
-use surrealdb::types::{RecordId, RecordIdKey};
+use surrealdb::types::{RecordId, RecordIdKey, SurrealValue};
 use utoipa::ToSchema;
 
 fn serialize_record_id<S: serde::Serializer>(id: &RecordId, s: S) -> Result<S::Ok, S::Error> {
@@ -12,6 +12,18 @@ fn serialize_record_id<S: serde::Serializer>(id: &RecordId, s: S) -> Result<S::O
 }
 
 use super::person::Person;
+
+/// The nature of a parent–child relationship.
+/// Defaults to `birth` for existing edges that pre-date this field.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, PartialEq, SurrealValue)]
+#[serde(rename_all = "snake_case")]
+pub enum Pedigree {
+    #[default]
+    Birth,
+    Adopted,
+    Step,
+    Foster,
+}
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "PascalCase")]
@@ -61,6 +73,18 @@ pub struct AddRelationshipRequest {
     pub spouse_from: Option<String>,
     /// Optional marriage/partnership end date.
     pub spouse_to: Option<String>,
+    /// Nature of the parent–child relationship. Only meaningful for Father and Mother.
+    /// Omit (or pass `birth`) for biological parents; use `adopted`, `step`, or `foster` otherwise.
+    #[serde(default)]
+    pub pedigree: Pedigree,
+}
+
+/// A parent with the edge's pedigree qualifier included.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ParentInfo {
+    #[serde(flatten)]
+    pub person: Person,
+    pub pedigree: Pedigree,
 }
 
 /// A spouse with the edge's date attributes included.
@@ -81,8 +105,8 @@ pub struct UpdateSpouseDatesRequest {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RelationshipsResponse {
-    pub father: Vec<Person>,
-    pub mother: Vec<Person>,
+    pub father: Vec<ParentInfo>,
+    pub mother: Vec<ParentInfo>,
     pub siblings: Vec<Person>,
     pub spouse: Vec<SpouseInfo>,
 }
@@ -100,6 +124,10 @@ pub struct FamilyTreeNode {
     pub place_of_birth: Option<String>,
     pub biography: Option<String>,
     pub image_path: Option<String>,
+    /// Pedigree of this node relative to its child (set when this node appears in
+    /// a parent list). Absent for the root node and non-parent roles.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pedigree: Option<Pedigree>,
     /// Father's node with their ancestors (2 generations deep).
     #[serde(default)]
     pub father: Vec<FamilyTreeNode>,

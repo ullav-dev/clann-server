@@ -15,11 +15,20 @@ use crate::{
     models::{
         person::Person,
         relationship::{
-            AddRelationshipRequest, FamilyTreeNode, RelationshipType, RelationshipsResponse,
-            SiblingType, SpouseInfo, UpdateSpouseDatesRequest,
+            AddRelationshipRequest, FamilyTreeNode, ParentInfo, Pedigree, RelationshipType,
+            RelationshipsResponse, SiblingType, SpouseInfo, UpdateSpouseDatesRequest,
         },
     },
 };
+
+fn pedigree_str(p: &Pedigree) -> &'static str {
+    match p {
+        Pedigree::Birth => "birth",
+        Pedigree::Adopted => "adopted",
+        Pedigree::Step => "step",
+        Pedigree::Foster => "foster",
+    }
+}
 
 /// Parse a "table:id" string into a SurrealDB `RecordId`.
 /// Binding RecordId directly avoids needing `type::thing()` in SurrealQL,
@@ -79,15 +88,19 @@ pub async fn add_relationship(
 
     match payload.rel_type {
         RelationshipType::Father => {
-            db.query("RELATE $from->has_father->$to")
+            let ped = pedigree_str(&payload.pedigree);
+            db.query("RELATE $from->has_father->$to CONTENT { pedigree: $ped }")
                 .bind(("from", from))
                 .bind(("to", to))
+                .bind(("ped", ped))
                 .await?;
         }
         RelationshipType::Mother => {
-            db.query("RELATE $from->has_mother->$to")
+            let ped = pedigree_str(&payload.pedigree);
+            db.query("RELATE $from->has_mother->$to CONTENT { pedigree: $ped }")
                 .bind(("from", from))
                 .bind(("to", to))
+                .bind(("ped", ped))
                 .await?;
         }
         RelationshipType::Sibling => {
@@ -148,25 +161,8 @@ pub async fn get_relationships(
     }
     let person_id = RecordId::new("person", id.as_str());
 
-    let mut father_res = db
-        .query("SELECT ->has_father->person.* AS persons FROM $id")
-        .bind(("id", person_id.clone()))
-        .await?;
-    let father: Vec<Person> = father_res
-        .take::<Vec<PersonsRow>>(0)?
-        .into_iter()
-        .flat_map(|r| r.persons)
-        .collect();
-
-    let mut mother_res = db
-        .query("SELECT ->has_mother->person.* AS persons FROM $id")
-        .bind(("id", person_id.clone()))
-        .await?;
-    let mother: Vec<Person> = mother_res
-        .take::<Vec<PersonsRow>>(0)?
-        .into_iter()
-        .flat_map(|r| r.persons)
-        .collect();
+    let father = fetch_parent_edges(&*db, &person_id, "has_father").await?;
+    let mother = fetch_parent_edges(&*db, &person_id, "has_mother").await?;
 
     // Siblings: query both directions to cover symmetric relationships.
     let mut sib_res = db
@@ -319,6 +315,7 @@ fn build_tree_node(
                 place_of_birth: person.place_of_birth,
                 biography: person.biography,
                 image_path: person.image_path,
+                pedigree: None,
                 father: vec![],
                 mother: vec![],
                 children,
@@ -327,23 +324,27 @@ fn build_tree_node(
             });
         }
 
-        let father_persons = {
+        let father_edges = {
             let conn = db.lock().await;
-            fetch_relatives(&*conn, &person.id, "has_father").await?
+            fetch_parent_edges(&*conn, &person.id, "has_father").await?
         };
-        let mother_persons = {
+        let mother_edges = {
             let conn = db.lock().await;
-            fetch_relatives(&*conn, &person.id, "has_mother").await?
+            fetch_parent_edges(&*conn, &person.id, "has_mother").await?
         };
 
         let mut father = Vec::new();
-        for p in father_persons {
-            father.push(build_tree_node(db.clone(), p, depth - 1, false).await?);
+        for pi in father_edges {
+            let mut node = build_tree_node(db.clone(), pi.person, depth - 1, false).await?;
+            node.pedigree = Some(pi.pedigree);
+            father.push(node);
         }
 
         let mut mother = Vec::new();
-        for p in mother_persons {
-            mother.push(build_tree_node(db.clone(), p, depth - 1, false).await?);
+        for pi in mother_edges {
+            let mut node = build_tree_node(db.clone(), pi.person, depth - 1, false).await?;
+            node.pedigree = Some(pi.pedigree);
+            mother.push(node);
         }
 
         Ok(FamilyTreeNode {
@@ -355,6 +356,7 @@ fn build_tree_node(
             place_of_birth: person.place_of_birth,
             biography: person.biography,
             image_path: person.image_path,
+            pedigree: None,
             father,
             mother,
             children,
@@ -380,11 +382,35 @@ async fn fetch_siblings(db: &DbConn, person_id: &RecordId) -> Result<Vec<Person>
     Ok(siblings)
 }
 
-async fn fetch_relatives(db: &DbConn, from: &RecordId, rel: &str) -> Result<Vec<Person>, AppError> {
-    let query = format!("SELECT ->{}->person.* AS persons FROM $id", rel);
-    let mut res = db.query(query).bind(("id", from.clone())).await?;
-    let rows: Vec<PersonsRow> = res.take(0)?;
-    Ok(rows.into_iter().flat_map(|r| r.persons).collect())
+/// Fetch parents with pedigree from a `has_father` or `has_mother` edge table.
+/// Edges that pre-date the `pedigree` field default to `Pedigree::Birth`.
+async fn fetch_parent_edges(db: &DbConn, person_id: &RecordId, rel: &str) -> Result<Vec<ParentInfo>, AppError> {
+    #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
+    struct ParentEdgeRow {
+        person: Person,
+        pedigree: Option<Pedigree>,
+    }
+
+    let query = format!(
+        "SELECT {{ \
+            id: out.id, family_name: out.family_name, first_name: out.first_name, \
+            middle_name: out.middle_name, sex: out.sex, date_of_birth: out.date_of_birth, \
+            place_of_birth: out.place_of_birth, date_of_death: out.date_of_death, \
+            place_of_death: out.place_of_death, image_path: out.image_path, \
+            nickname: out.nickname, username: out.username, email: out.email, \
+            verified: out.verified, biography: out.biography, \
+            created_by: out.created_by, trees: out.trees }} AS person, \
+         pedigree \
+         FROM {} WHERE in = $id",
+        rel
+    );
+
+    let mut res = db.query(query).bind(("id", person_id.clone())).await?;
+    let rows: Vec<ParentEdgeRow> = res.take(0)?;
+    Ok(rows
+        .into_iter()
+        .map(|r| ParentInfo { person: r.person, pedigree: r.pedigree.unwrap_or(Pedigree::Birth) })
+        .collect())
 }
 
 /// Fetch all people who have `parent_id` as their father or mother.
