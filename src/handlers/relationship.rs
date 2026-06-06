@@ -92,9 +92,6 @@ pub async fn add_relationship(
                 SiblingType::Sister => "Sister",
             };
             let ped = payload.pedigree.as_db_str();
-            // Pedigree is inlined as a string literal (safe — comes from a controlled enum) because
-            // adding a 4th bound variable to this RELATE CONTENT causes the embedded engine to
-            // silently skip creating the edge (SurrealDB embedded bug with multiple CONTENT bindings).
             db.query("RELATE $from->has_sibling->$to CONTENT { sibling_type: $st, pedigree: $ped }")
                 .bind(("from", from))
                 .bind(("to", to))
@@ -353,65 +350,47 @@ pub async fn fetch_siblings(db: &DbConn, person_id: &RecordId) -> Result<Vec<(Pe
 }
 
 /// Fetch siblings with pedigree from the edge.
-/// Uses the proven graph-traversal query for person data, then a simple edge query for pedigrees.
+/// Queries both outgoing and incoming edges to cover the one-directional `has_sibling` table.
 async fn fetch_sibling_edges(db: &DbConn, person_id: &RecordId) -> Result<Vec<SiblingInfo>, AppError> {
-    // Step 1: get sibling persons via graph traversal (proven reliable in embedded engine).
     #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
-    struct SiblingsRow {
-        out_siblings: Vec<Person>,
-        in_siblings: Vec<Person>,
-    }
-
-    let mut person_res = db
-        .query("SELECT ->has_sibling->person.* AS out_siblings, <-has_sibling<-person.* AS in_siblings FROM $id")
-        .bind(("id", person_id.clone()))
-        .await?;
-    let persons: Vec<Person> = person_res
-        .take::<Vec<SiblingsRow>>(0)?
-        .into_iter()
-        .flat_map(|r| r.out_siblings.into_iter().chain(r.in_siblings))
-        .collect();
-
-    if persons.is_empty() {
-        return Ok(vec![]);
-    }
-
-    // Step 2: get pedigrees from the edges using a parent-edge-style query.
-    // Build a map from sibling RecordId key → Pedigree.
-    #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
-    struct PedigreeRow {
-        sibling_id: RecordId,
+    struct SiblingEdgeRow {
+        person: Person,
         pedigree: Option<String>,
     }
 
-    let mut out_ped_res = db
-        .query("SELECT out AS sibling_id, pedigree FROM has_sibling WHERE in = $id")
-        .bind(("id", person_id.clone()))
-        .await?;
-    let mut in_ped_res = db
-        .query("SELECT in AS sibling_id, pedigree FROM has_sibling WHERE out = $id")
-        .bind(("id", person_id.clone()))
-        .await?;
+    // Outgoing: current person is `in`, sibling is `out`
+    let q_out = "SELECT \
+        { id: out.id, family_name: out.family_name, first_name: out.first_name, \
+          middle_name: out.middle_name, sex: out.sex, date_of_birth: out.date_of_birth, \
+          place_of_birth: out.place_of_birth, date_of_death: out.date_of_death, \
+          place_of_death: out.place_of_death, image_path: out.image_path, \
+          nickname: out.nickname, username: out.username, email: out.email, \
+          verified: out.verified, biography: out.biography, \
+          created_by: out.created_by, trees: out.trees } AS person, \
+        pedigree FROM has_sibling WHERE in = $id";
 
-    let out_ped_rows: Vec<PedigreeRow> = out_ped_res.take(0).unwrap_or_default();
-    let in_ped_rows: Vec<PedigreeRow>  = in_ped_res.take(0).unwrap_or_default();
+    // Incoming: current person is `out`, sibling is `in`
+    let q_in = "SELECT \
+        { id: in.id, family_name: in.family_name, first_name: in.first_name, \
+          middle_name: in.middle_name, sex: in.sex, date_of_birth: in.date_of_birth, \
+          place_of_birth: in.place_of_birth, date_of_death: in.date_of_death, \
+          place_of_death: in.place_of_death, image_path: in.image_path, \
+          nickname: in.nickname, username: in.username, email: in.email, \
+          verified: in.verified, biography: in.biography, \
+          created_by: in.created_by, trees: in.trees } AS person, \
+        pedigree FROM has_sibling WHERE out = $id";
 
-    let pedigree_map: std::collections::HashMap<String, Pedigree> = out_ped_rows
-        .into_iter().chain(in_ped_rows)
-        .map(|r| (
-            record_id_key(&r.sibling_id),
-            r.pedigree.as_deref().map(Pedigree::from_db_str).unwrap_or(Pedigree::Birth),
-        ))
-        .collect();
+    let mut out_res = db.query(q_out).bind(("id", person_id.clone())).await?;
+    let mut in_res  = db.query(q_in).bind(("id", person_id.clone())).await?;
+    let out_rows: Vec<SiblingEdgeRow> = out_res.take(0)?;
+    let in_rows: Vec<SiblingEdgeRow>  = in_res.take(0)?;
 
-    // Step 3: deduplicate persons and attach pedigrees.
     let mut seen = std::collections::HashSet::new();
-    let siblings = persons
-        .into_iter()
-        .filter(|p| seen.insert(record_id_key(&p.id)))
-        .map(|p| {
-            let ped = pedigree_map.get(&record_id_key(&p.id)).cloned().unwrap_or(Pedigree::Birth);
-            SiblingInfo { pedigree: ped, person: p }
+    let siblings = out_rows.into_iter().chain(in_rows)
+        .filter(|r| seen.insert(record_id_key(&r.person.id)))
+        .map(|r| SiblingInfo {
+            pedigree: r.pedigree.as_deref().map(Pedigree::from_db_str).unwrap_or(Pedigree::Birth),
+            person: r.person,
         })
         .collect();
     Ok(siblings)
