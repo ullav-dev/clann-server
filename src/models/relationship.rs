@@ -95,8 +95,9 @@ pub struct AddRelationshipRequest {
     pub spouse_from: Option<String>,
     /// Optional marriage/partnership end date.
     pub spouse_to: Option<String>,
-    /// Nature of the parent–child relationship. Only meaningful for Father and Mother.
-    /// Omit (or pass `birth`) for biological parents; use `adopted`, `step`, or `foster` otherwise.
+    /// Nature of the relationship. For Father/Mother: the parent–child bond type.
+    /// For Sibling: the sibling bond type (e.g. `step` for step-siblings).
+    /// Omit (or pass `birth`) for biological relationships.
     #[serde(default)]
     pub pedigree: Pedigree,
 }
@@ -104,6 +105,14 @@ pub struct AddRelationshipRequest {
 /// A parent with the edge's pedigree qualifier included.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ParentInfo {
+    #[serde(flatten)]
+    pub person: Person,
+    pub pedigree: Pedigree,
+}
+
+/// A sibling with the edge's pedigree qualifier included.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SiblingInfo {
     #[serde(flatten)]
     pub person: Person,
     pub pedigree: Pedigree,
@@ -129,7 +138,7 @@ pub struct UpdateSpouseDatesRequest {
 pub struct RelationshipsResponse {
     pub father: Vec<ParentInfo>,
     pub mother: Vec<ParentInfo>,
-    pub siblings: Vec<Person>,
+    pub siblings: Vec<SiblingInfo>,
     pub spouse: Vec<SpouseInfo>,
 }
 

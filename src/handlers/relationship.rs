@@ -5,7 +5,6 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use serde::Deserialize;
 use surrealdb::types::{RecordId, RecordIdKey, SurrealValue};
 
 use crate::{
@@ -16,7 +15,7 @@ use crate::{
         person::Person,
         relationship::{
             AddRelationshipRequest, FamilyTreeNode, ParentInfo, Pedigree, RelationshipType,
-            RelationshipsResponse, SiblingType, SpouseInfo, UpdateSpouseDatesRequest,
+            RelationshipsResponse, SiblingInfo, SiblingType, SpouseInfo, UpdateSpouseDatesRequest,
         },
     },
 };
@@ -38,16 +37,6 @@ fn record_id_key(id: &RecordId) -> String {
     }
 }
 
-#[derive(Deserialize, SurrealValue)]
-struct PersonsRow {
-    persons: Vec<Person>,
-}
-
-#[derive(Deserialize, SurrealValue)]
-struct SiblingsRow {
-    out_siblings: Vec<Person>,
-    in_siblings: Vec<Person>,
-}
 
 #[utoipa::path(
     post,
@@ -102,10 +91,12 @@ pub async fn add_relationship(
                 SiblingType::Brother => "Brother",
                 SiblingType::Sister => "Sister",
             };
-            db.query("RELATE $from->has_sibling->$to CONTENT { sibling_type: $st }")
+            let ped = payload.pedigree.as_db_str();
+            db.query("RELATE $from->has_sibling->$to CONTENT { sibling_type: $st, pedigree: $ped }")
                 .bind(("from", from))
                 .bind(("to", to))
                 .bind(("st", st))
+                .bind(("ped", ped))
                 .await?;
         }
         RelationshipType::Spouse => {
@@ -155,18 +146,7 @@ pub async fn get_relationships(
     let father = fetch_parent_edges(&*db, &person_id, "has_father").await?;
     let mother = fetch_parent_edges(&*db, &person_id, "has_mother").await?;
 
-    // Siblings: query both directions to cover symmetric relationships.
-    let mut sib_res = db
-        .query(
-            "SELECT ->has_sibling->person.* AS out_siblings, <-has_sibling<-person.* AS in_siblings FROM $id",
-        )
-        .bind(("id", person_id.clone()))
-        .await?;
-    let siblings: Vec<Person> = sib_res
-        .take::<Vec<SiblingsRow>>(0)?
-        .into_iter()
-        .flat_map(|r| r.out_siblings.into_iter().chain(r.in_siblings))
-        .collect();
+    let siblings = fetch_sibling_edges(&*db, &person_id).await?;
 
     // Spouses: bidirectional edges exist, so forward query is sufficient.
     let spouse = fetch_spouses(&*db, &person_id).await?;
@@ -280,16 +260,20 @@ fn build_tree_node(
             };
 
             let mut child_nodes = Vec::new();
-            for p in child_persons {
-                child_nodes.push(build_tree_node(db.clone(), p, 0, false).await?);
+            for (p, ped) in child_persons {
+                let mut node = build_tree_node(db.clone(), p, 0, false).await?;
+                node.pedigree = Some(ped);
+                child_nodes.push(node);
             }
             let mut spouse_nodes = Vec::new();
             for s in spouse_persons {
                 spouse_nodes.push(build_tree_node(db.clone(), s.person, 0, false).await?);
             }
             let mut sibling_nodes = Vec::new();
-            for p in sibling_persons {
-                sibling_nodes.push(build_tree_node(db.clone(), p, 0, false).await?);
+            for (p, ped) in sibling_persons {
+                let mut node = build_tree_node(db.clone(), p, 0, false).await?;
+                node.pedigree = Some(ped);
+                sibling_nodes.push(node);
             }
             (child_nodes, spouse_nodes, sibling_nodes)
         } else {
@@ -357,18 +341,57 @@ fn build_tree_node(
     })
 }
 
-async fn fetch_siblings(db: &DbConn, person_id: &RecordId) -> Result<Vec<Person>, AppError> {
-    let mut res = db
-        .query(
-            "SELECT ->has_sibling->person.* AS out_siblings, \
-                    <-has_sibling<-person.* AS in_siblings FROM $id",
-        )
-        .bind(("id", person_id.clone()))
-        .await?;
-    let siblings: Vec<Person> = res
-        .take::<Vec<SiblingsRow>>(0)?
-        .into_iter()
-        .flat_map(|r| r.out_siblings.into_iter().chain(r.in_siblings))
+/// Fetch siblings with pedigree for the family-tree endpoint.
+/// Returns (Person, Pedigree) pairs so callers can set pedigree on the resulting nodes.
+pub async fn fetch_siblings(db: &DbConn, person_id: &RecordId) -> Result<Vec<(Person, Pedigree)>, AppError> {
+    fetch_sibling_edges(db, person_id)
+        .await
+        .map(|v| v.into_iter().map(|s| (s.person, s.pedigree)).collect())
+}
+
+/// Fetch siblings with pedigree from the edge.
+/// Queries both outgoing and incoming edges to cover the one-directional `has_sibling` table.
+async fn fetch_sibling_edges(db: &DbConn, person_id: &RecordId) -> Result<Vec<SiblingInfo>, AppError> {
+    #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
+    struct SiblingEdgeRow {
+        person: Person,
+        pedigree: Option<String>,
+    }
+
+    // Outgoing: current person is `in`, sibling is `out`
+    let q_out = "SELECT \
+        { id: out.id, family_name: out.family_name, first_name: out.first_name, \
+          middle_name: out.middle_name, sex: out.sex, date_of_birth: out.date_of_birth, \
+          place_of_birth: out.place_of_birth, date_of_death: out.date_of_death, \
+          place_of_death: out.place_of_death, image_path: out.image_path, \
+          nickname: out.nickname, username: out.username, email: out.email, \
+          verified: out.verified, biography: out.biography, \
+          created_by: out.created_by, trees: out.trees } AS person, \
+        pedigree FROM has_sibling WHERE in = $id";
+
+    // Incoming: current person is `out`, sibling is `in`
+    let q_in = "SELECT \
+        { id: in.id, family_name: in.family_name, first_name: in.first_name, \
+          middle_name: in.middle_name, sex: in.sex, date_of_birth: in.date_of_birth, \
+          place_of_birth: in.place_of_birth, date_of_death: in.date_of_death, \
+          place_of_death: in.place_of_death, image_path: in.image_path, \
+          nickname: in.nickname, username: in.username, email: in.email, \
+          verified: in.verified, biography: in.biography, \
+          created_by: in.created_by, trees: in.trees } AS person, \
+        pedigree FROM has_sibling WHERE out = $id";
+
+    let mut out_res = db.query(q_out).bind(("id", person_id.clone())).await?;
+    let mut in_res  = db.query(q_in).bind(("id", person_id.clone())).await?;
+    let out_rows: Vec<SiblingEdgeRow> = out_res.take(0)?;
+    let in_rows: Vec<SiblingEdgeRow>  = in_res.take(0)?;
+
+    let mut seen = std::collections::HashSet::new();
+    let siblings = out_rows.into_iter().chain(in_rows)
+        .filter(|r| seen.insert(record_id_key(&r.person.id)))
+        .map(|r| SiblingInfo {
+            pedigree: r.pedigree.as_deref().map(Pedigree::from_db_str).unwrap_or(Pedigree::Birth),
+            person: r.person,
+        })
         .collect();
     Ok(siblings)
 }
@@ -409,34 +432,42 @@ async fn fetch_parent_edges(db: &DbConn, person_id: &RecordId, rel: &str) -> Res
         .collect())
 }
 
-/// Fetch all people who have `parent_id` as their father or mother.
-async fn fetch_children(db: &DbConn, parent_id: &RecordId) -> Result<Vec<Person>, AppError> {
-    let mut father_res = db
-        .query("SELECT <-has_father<-person.* AS persons FROM $id")
-        .bind(("id", parent_id.clone()))
-        .await?;
-    let mut mother_res = db
-        .query("SELECT <-has_mother<-person.* AS persons FROM $id")
-        .bind(("id", parent_id.clone()))
-        .await?;
+/// Fetch all children of a parent with the pedigree of their relationship to this parent.
+/// The `pedigree` on each returned item reflects the child→parent edge for this specific parent.
+async fn fetch_children(db: &DbConn, parent_id: &RecordId) -> Result<Vec<(Person, Pedigree)>, AppError> {
+    #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
+    struct ChildEdgeRow {
+        person: Person,
+        pedigree: Option<String>,
+    }
 
-    let mut all: Vec<Person> = father_res
-        .take::<Vec<PersonsRow>>(0)?
-        .into_iter()
-        .flat_map(|r| r.persons)
-        .chain(
-            mother_res
-                .take::<Vec<PersonsRow>>(0)?
-                .into_iter()
-                .flat_map(|r| r.persons),
-        )
+    // Children stored as child→has_father→parent (or has_mother); `in` is child, `out` is parent.
+    let child_fields = "{ id: in.id, family_name: in.family_name, first_name: in.first_name, \
+        middle_name: in.middle_name, sex: in.sex, date_of_birth: in.date_of_birth, \
+        place_of_birth: in.place_of_birth, date_of_death: in.date_of_death, \
+        place_of_death: in.place_of_death, image_path: in.image_path, \
+        nickname: in.nickname, username: in.username, email: in.email, \
+        verified: in.verified, biography: in.biography, \
+        created_by: in.created_by, trees: in.trees } AS person, pedigree";
+
+    let q_father = format!("SELECT {} FROM has_father WHERE out = $id", child_fields);
+    let q_mother = format!("SELECT {} FROM has_mother WHERE out = $id", child_fields);
+
+    let mut father_res = db.query(q_father).bind(("id", parent_id.clone())).await?;
+    let mut mother_res = db.query(q_mother).bind(("id", parent_id.clone())).await?;
+
+    let mut all: Vec<ChildEdgeRow> = father_res.take::<Vec<ChildEdgeRow>>(0)?.into_iter()
+        .chain(mother_res.take::<Vec<ChildEdgeRow>>(0)?.into_iter())
         .collect();
 
-    // Deduplicate by ULID key.
+    // Deduplicate by ULID key (a child may have both parents in this tree).
     let mut seen = std::collections::HashSet::new();
-    all.retain(|p| seen.insert(record_id_key(&p.id)));
+    all.retain(|r| seen.insert(record_id_key(&r.person.id)));
 
-    Ok(all)
+    Ok(all.into_iter().map(|r| (
+        r.person,
+        r.pedigree.as_deref().map(Pedigree::from_db_str).unwrap_or(Pedigree::Birth),
+    )).collect())
 }
 
 /// Fetch spouses with edge date attributes.
