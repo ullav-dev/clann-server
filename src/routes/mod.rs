@@ -15,7 +15,7 @@ use crate::{
         person::{add_person_to_tree, create_person, delete_person, get_person, list_persons, remove_person_from_tree, update_person},
         relationship::{
             add_relationship, delete_relationship, get_family_tree, get_relationships,
-            update_spouse_dates,
+            update_relationship_pedigree, update_spouse_dates,
         },
         chat_session::{create_session, delete_session, list_sessions, list_session_messages, append_message},
         research_folder::{create_folder, delete_folder, list_folders, rename_folder},
@@ -75,7 +75,7 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
         )
         .route(
             "/api/persons/{id}/relationships/{rel_type}/{related_id}",
-            delete(delete_relationship),
+            delete(delete_relationship).patch(update_relationship_pedigree),
         )
         .route("/api/persons/{id}/family-tree", get(get_family_tree))
         .route(

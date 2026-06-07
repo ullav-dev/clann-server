@@ -100,6 +100,21 @@ pub struct AddRelationshipRequest {
     /// Omit (or pass `birth`) for biological relationships.
     #[serde(default)]
     pub pedigree: Pedigree,
+    /// For non-birth siblings: the parent (full record ID, e.g. `person:<ulid>`) whose
+    /// family connection creates the step/adopted/foster relationship.
+    /// Required for correct family-group visualisation in the tree view.
+    #[serde(default)]
+    pub via_parent_id: Option<String>,
+}
+
+/// Payload for updating the pedigree on an existing parent or sibling relationship.
+/// For parent edges, also triggers cascade updates on derived sibling edges.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateRelationshipRequest {
+    pub pedigree: Pedigree,
+    /// When updating a sibling edge, optionally set/change which parent this
+    /// step relationship is formed through.
+    pub via_parent_id: Option<String>,
 }
 
 /// A parent with the edge's pedigree qualifier included.
@@ -116,6 +131,10 @@ pub struct SiblingInfo {
     #[serde(flatten)]
     pub person: Person,
     pub pedigree: Pedigree,
+    /// The parent through whom this step/adopted/foster relationship is formed.
+    /// Full record ID, e.g. `person:<ulid>`. Only set for non-birth siblings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via_parent_id: Option<String>,
 }
 
 /// A spouse with the edge's date attributes included.
@@ -175,4 +194,8 @@ pub struct FamilyTreeNode {
     /// Siblings. Only populated for the root node.
     #[serde(default)]
     pub siblings: Vec<FamilyTreeNode>,
+    /// For sibling nodes: the parent through whose family this step/adopted/foster
+    /// relationship is formed. Mirrors `SiblingInfo.via_parent_id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via_parent_id: Option<String>,
 }
