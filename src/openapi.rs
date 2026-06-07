@@ -7,7 +7,10 @@ use crate::{
         family_tree::{CreateFamilyTree, FamilyTree, SetTreeTeam, UpdateFamilyTree},
         life_event::{CreateLifeEvent, EventType, LifeEvent, UpdateLifeEvent},
         person::{CreatePerson, Person, Sex, UpdatePerson},
-        relationship::{AddRelationshipRequest, RelationshipType, RelationshipsResponse, SiblingType},
+        relationship::{
+            AddRelationshipRequest, RelationshipType, RelationshipsResponse, SiblingType,
+            UpdateRelationshipRequest,
+        },
     },
 };
 
@@ -38,6 +41,7 @@ use crate::{
         crate::handlers::relationship::delete_relationship,
         crate::handlers::relationship::get_family_tree,
         crate::handlers::relationship::update_spouse_dates,
+        crate::handlers::relationship::update_relationship_pedigree,
         crate::handlers::life_event::create_life_event,
         crate::handlers::life_event::list_life_events,
         crate::handlers::life_event::get_life_event,
@@ -52,6 +56,7 @@ use crate::{
             SiblingType, RelationshipType,
             crate::models::relationship::SpouseInfo,
             crate::models::relationship::UpdateSpouseDatesRequest,
+            UpdateRelationshipRequest,
             LifeEvent, CreateLifeEvent, UpdateLifeEvent, EventType,
             ErrorResponse,
         )

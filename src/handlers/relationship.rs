@@ -15,7 +15,8 @@ use crate::{
         person::Person,
         relationship::{
             AddRelationshipRequest, FamilyTreeNode, ParentInfo, Pedigree, RelationshipType,
-            RelationshipsResponse, SiblingInfo, SiblingType, SpouseInfo, UpdateSpouseDatesRequest,
+            RelationshipsResponse, SiblingInfo, SiblingType, SpouseInfo, UpdateRelationshipRequest,
+            UpdateSpouseDatesRequest,
         },
     },
 };
@@ -92,11 +93,15 @@ pub async fn add_relationship(
                 SiblingType::Sister => "Sister",
             };
             let ped = payload.pedigree.as_db_str();
-            db.query("RELATE $from->has_sibling->$to CONTENT { sibling_type: $st, pedigree: $ped }")
+            let vpid = payload.via_parent_id;
+            db.query(
+                "RELATE $from->has_sibling->$to CONTENT { sibling_type: $st, pedigree: $ped, via_parent_id: $vpid }"
+            )
                 .bind(("from", from))
                 .bind(("to", to))
                 .bind(("st", st))
                 .bind(("ped", ped))
+                .bind(("vpid", vpid))
                 .await?;
         }
         RelationshipType::Spouse => {
@@ -270,9 +275,10 @@ fn build_tree_node(
                 spouse_nodes.push(build_tree_node(db.clone(), s.person, 0, false).await?);
             }
             let mut sibling_nodes = Vec::new();
-            for (p, ped) in sibling_persons {
+            for (p, ped, vpid) in sibling_persons {
                 let mut node = build_tree_node(db.clone(), p, 0, false).await?;
                 node.pedigree = Some(ped);
+                node.via_parent_id = vpid;
                 sibling_nodes.push(node);
             }
             (child_nodes, spouse_nodes, sibling_nodes)
@@ -291,6 +297,7 @@ fn build_tree_node(
                 biography: person.biography,
                 image_path: person.image_path,
                 pedigree: None,
+                via_parent_id: None,
                 father: vec![],
                 mother: vec![],
                 children,
@@ -332,6 +339,7 @@ fn build_tree_node(
             biography: person.biography,
             image_path: person.image_path,
             pedigree: None,
+            via_parent_id: None,
             father,
             mother,
             children,
@@ -341,21 +349,21 @@ fn build_tree_node(
     })
 }
 
-/// Fetch siblings with pedigree for the family-tree endpoint.
-/// Returns (Person, Pedigree) pairs so callers can set pedigree on the resulting nodes.
-pub async fn fetch_siblings(db: &DbConn, person_id: &RecordId) -> Result<Vec<(Person, Pedigree)>, AppError> {
+/// Fetch siblings with pedigree and via_parent_id for the family-tree endpoint.
+pub async fn fetch_siblings(db: &DbConn, person_id: &RecordId) -> Result<Vec<(Person, Pedigree, Option<String>)>, AppError> {
     fetch_sibling_edges(db, person_id)
         .await
-        .map(|v| v.into_iter().map(|s| (s.person, s.pedigree)).collect())
+        .map(|v| v.into_iter().map(|s| (s.person, s.pedigree, s.via_parent_id)).collect())
 }
 
-/// Fetch siblings with pedigree from the edge.
+/// Fetch siblings with pedigree and via_parent_id from the edge.
 /// Queries both outgoing and incoming edges to cover the one-directional `has_sibling` table.
 async fn fetch_sibling_edges(db: &DbConn, person_id: &RecordId) -> Result<Vec<SiblingInfo>, AppError> {
     #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
     struct SiblingEdgeRow {
         person: Person,
         pedigree: Option<String>,
+        via_parent_id: Option<String>,
     }
 
     // Outgoing: current person is `in`, sibling is `out`
@@ -367,7 +375,7 @@ async fn fetch_sibling_edges(db: &DbConn, person_id: &RecordId) -> Result<Vec<Si
           nickname: out.nickname, username: out.username, email: out.email, \
           verified: out.verified, biography: out.biography, \
           created_by: out.created_by, trees: out.trees } AS person, \
-        pedigree FROM has_sibling WHERE in = $id";
+        pedigree, via_parent_id FROM has_sibling WHERE in = $id";
 
     // Incoming: current person is `out`, sibling is `in`
     let q_in = "SELECT \
@@ -378,7 +386,7 @@ async fn fetch_sibling_edges(db: &DbConn, person_id: &RecordId) -> Result<Vec<Si
           nickname: in.nickname, username: in.username, email: in.email, \
           verified: in.verified, biography: in.biography, \
           created_by: in.created_by, trees: in.trees } AS person, \
-        pedigree FROM has_sibling WHERE out = $id";
+        pedigree, via_parent_id FROM has_sibling WHERE out = $id";
 
     let mut out_res = db.query(q_out).bind(("id", person_id.clone())).await?;
     let mut in_res  = db.query(q_in).bind(("id", person_id.clone())).await?;
@@ -390,6 +398,7 @@ async fn fetch_sibling_edges(db: &DbConn, person_id: &RecordId) -> Result<Vec<Si
         .filter(|r| seen.insert(record_id_key(&r.person.id)))
         .map(|r| SiblingInfo {
             pedigree: r.pedigree.as_deref().map(Pedigree::from_db_str).unwrap_or(Pedigree::Birth),
+            via_parent_id: r.via_parent_id,
             person: r.person,
         })
         .collect();
@@ -498,6 +507,90 @@ async fn fetch_spouses(db: &DbConn, person_id: &RecordId) -> Result<Vec<SpouseIn
         .into_iter()
         .map(|r| SpouseInfo { person: r.person, spouse_from: r.spouse_from, spouse_to: r.spouse_to })
         .collect())
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/persons/{id}/relationships/{rel_type}/{related_id}",
+    params(
+        ("id" = String, Path, description = "Person record ID (without the `person:` prefix)"),
+        ("rel_type" = String, Path, description = "Relationship table: `has_father`, `has_mother`, or `has_sibling`"),
+        ("related_id" = String, Path, description = "Full related record ID, e.g. `person:01jd4a8xyz`"),
+    ),
+    request_body = UpdateRelationshipRequest,
+    responses(
+        (status = 204, description = "Pedigree updated"),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+    ),
+    tag = "relationships"
+)]
+pub async fn update_relationship_pedigree(
+    State(db): State<Db>,
+    Path((id, rel_type, related_id)): Path<(String, String, String)>,
+    Query(filter): Query<PersonFilter>,
+    Json(payload): Json<UpdateRelationshipRequest>,
+) -> Result<StatusCode, AppError> {
+    let db = db.lock().await;
+
+    if filter.created_by.is_some() {
+        let person: Option<crate::models::person::Person> = db.select(("person", id.as_str())).await?;
+        check_ownership(&person.ok_or(AppError::NotFound)?, &filter.created_by)?;
+    }
+
+    let valid = RelationshipType::from_str(&rel_type)
+        .ok_or_else(|| AppError::InvalidRelType(format!("Unknown relationship type: {}", rel_type)))?;
+
+    let new_ped = payload.pedigree.as_db_str();
+
+    match valid {
+        RelationshipType::Father | RelationshipType::Mother => {
+            // Update the parent edge pedigree.
+            let q = format!(
+                "UPDATE {} SET pedigree = $ped WHERE in = $from AND out = $to",
+                rel_type
+            );
+            let from = RecordId::new("person", id.as_str());
+            let to = parse_record_id(&related_id)?;
+            db.query(q)
+                .bind(("ped", new_ped))
+                .bind(("from", from.clone()))
+                .bind(("to", to))
+                .await?;
+
+            // Cascade: update sibling edges whose via_parent_id points to this parent.
+            // Step/adopted/foster parent → step siblings; birth parent → birth siblings.
+            let sib_ped = if payload.pedigree != Pedigree::Birth { "step" } else { "birth" };
+            db.query(
+                "UPDATE has_sibling SET pedigree = $sib_ped \
+                 WHERE (in = $person OR out = $person) AND via_parent_id = $vpid"
+            )
+            .bind(("sib_ped", sib_ped))
+            .bind(("person", from))
+            .bind(("vpid", related_id))
+            .await?;
+        }
+        RelationshipType::Sibling => {
+            let from = RecordId::new("person", id.as_str());
+            let to = parse_record_id(&related_id)?;
+            // Update pedigree; also update via_parent_id if provided.
+            db.query(
+                "UPDATE has_sibling SET pedigree = $ped, via_parent_id = $vpid \
+                 WHERE (in = $from AND out = $to) OR (in = $to AND out = $from)"
+            )
+            .bind(("ped", new_ped))
+            .bind(("vpid", payload.via_parent_id))
+            .bind(("from", from))
+            .bind(("to", to))
+            .await?;
+        }
+        _ => {
+            return Err(AppError::BadRequest(
+                "Pedigree update not supported for this relationship type".to_string(),
+            ));
+        }
+    }
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(
