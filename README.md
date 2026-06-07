@@ -1,6 +1,6 @@
 # clann-server
 
-A REST API server for managing ancestry and family tree data, written in Rust.
+A REST API server for managing ancestry and family tree data
 
 ## Stack
 
