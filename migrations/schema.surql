@@ -74,7 +74,8 @@ DEFINE TABLE IF NOT EXISTS has_spouse  TYPE RELATION IN person OUT person SCHEMA
 DEFINE FIELD IF NOT EXISTS pedigree    ON TABLE has_father  TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS pedigree    ON TABLE has_mother  TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS pedigree    ON TABLE has_sibling TYPE option<string>;
-DEFINE FIELD IF NOT EXISTS sibling_type ON TABLE has_sibling TYPE string ASSERT $value IN ["Brother", "Sister"];
+DEFINE FIELD IF NOT EXISTS sibling_type  ON TABLE has_sibling TYPE string ASSERT $value IN ["Brother", "Sister"];
+DEFINE FIELD IF NOT EXISTS via_parent_id ON TABLE has_sibling TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS spouse_from  ON TABLE has_spouse  TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS spouse_to    ON TABLE has_spouse  TYPE option<string>;
 
