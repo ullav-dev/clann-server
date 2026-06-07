@@ -93,16 +93,24 @@ pub async fn add_relationship(
                 SiblingType::Sister => "Sister",
             };
             let ped = payload.pedigree.as_db_str();
-            let vpid = payload.via_parent_id;
-            db.query(
+            let vpid_opt = payload.via_parent_id;
+            // Only include via_parent_id in CONTENT when it's set — binding None as $vpid
+            // produces SurrealDB NONE which omits the field anyway, but that causes
+            // deserialization failures on read when the field is absent without #[serde(default)].
+            let q = if vpid_opt.is_some() {
                 "RELATE $from->has_sibling->$to CONTENT { sibling_type: $st, pedigree: $ped, via_parent_id: $vpid }"
-            )
+            } else {
+                "RELATE $from->has_sibling->$to CONTENT { sibling_type: $st, pedigree: $ped }"
+            };
+            let mut qb = db.query(q)
                 .bind(("from", from))
                 .bind(("to", to))
                 .bind(("st", st))
-                .bind(("ped", ped))
-                .bind(("vpid", vpid))
-                .await?;
+                .bind(("ped", ped));
+            if let Some(v) = vpid_opt {
+                qb = qb.bind(("vpid", v));
+            }
+            qb.await?;
         }
         RelationshipType::Spouse => {
             // Both directions in a single query — no await gap between them.
@@ -363,6 +371,7 @@ async fn fetch_sibling_edges(db: &DbConn, person_id: &RecordId) -> Result<Vec<Si
     struct SiblingEdgeRow {
         person: Person,
         pedigree: Option<String>,
+        #[serde(default)]
         via_parent_id: Option<String>,
     }
 
