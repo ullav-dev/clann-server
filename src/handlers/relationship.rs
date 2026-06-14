@@ -1,16 +1,17 @@
 use std::{future::Future, pin::Pin};
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     http::StatusCode,
     Json,
 };
 use surrealdb::types::{RecordId, RecordIdKey, SurrealValue};
 
 use crate::{
+    auth::ClannAuth,
     db::{Db, DbConn},
     error::{AppError, ErrorResponse},
-    handlers::person::{PersonFilter, check_ownership},
+    handlers::person::{PersonFilter, can_write_to_person, check_ownership},
     models::{
         person::Person,
         relationship::{
@@ -54,16 +55,15 @@ fn record_id_key(id: &RecordId) -> String {
 )]
 pub async fn add_relationship(
     State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
     Path(id): Path<String>,
     Query(filter): Query<PersonFilter>,
     Json(payload): Json<AddRelationshipRequest>,
 ) -> Result<StatusCode, AppError> {
     let db = db.lock().await;
 
-    if filter.created_by.is_some() {
-        let person: Option<Person> = db.select(("person", id.as_str())).await?;
-        check_ownership(&person.ok_or(AppError::NotFound)?, &filter.created_by)?;
-    }
+    let person: Option<Person> = db.select(("person", id.as_str())).await?;
+    can_write_to_person(&person.ok_or(AppError::NotFound)?, &auth, &db).await?;
     let from = RecordId::new("person", id.as_str());
     let to = parse_record_id(&payload.related_id)?;
 
@@ -183,15 +183,14 @@ pub async fn get_relationships(
 )]
 pub async fn delete_relationship(
     State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
     Path((id, rel_type, related_id)): Path<(String, String, String)>,
     Query(filter): Query<PersonFilter>,
 ) -> Result<StatusCode, AppError> {
     let db = db.lock().await;
 
-    if filter.created_by.is_some() {
-        let person: Option<Person> = db.select(("person", id.as_str())).await?;
-        check_ownership(&person.ok_or(AppError::NotFound)?, &filter.created_by)?;
-    }
+    let person: Option<Person> = db.select(("person", id.as_str())).await?;
+    can_write_to_person(&person.ok_or(AppError::NotFound)?, &auth, &db).await?;
     // Validate rel_type against the whitelist before embedding it in the query string.
     let valid = RelationshipType::from_str(&rel_type)
         .ok_or_else(|| AppError::InvalidRelType(format!("Unknown relationship type: {}", rel_type)))?;
@@ -535,16 +534,15 @@ async fn fetch_spouses(db: &DbConn, person_id: &RecordId) -> Result<Vec<SpouseIn
 )]
 pub async fn update_relationship_pedigree(
     State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
     Path((id, rel_type, related_id)): Path<(String, String, String)>,
     Query(filter): Query<PersonFilter>,
     Json(payload): Json<UpdateRelationshipRequest>,
 ) -> Result<StatusCode, AppError> {
     let db = db.lock().await;
 
-    if filter.created_by.is_some() {
-        let person: Option<crate::models::person::Person> = db.select(("person", id.as_str())).await?;
-        check_ownership(&person.ok_or(AppError::NotFound)?, &filter.created_by)?;
-    }
+    let person: Option<crate::models::person::Person> = db.select(("person", id.as_str())).await?;
+    can_write_to_person(&person.ok_or(AppError::NotFound)?, &auth, &db).await?;
 
     let valid = RelationshipType::from_str(&rel_type)
         .ok_or_else(|| AppError::InvalidRelType(format!("Unknown relationship type: {}", rel_type)))?;
@@ -618,16 +616,15 @@ pub async fn update_relationship_pedigree(
 )]
 pub async fn update_spouse_dates(
     State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
     Path((id, related_id)): Path<(String, String)>,
     Query(filter): Query<PersonFilter>,
     Json(payload): Json<UpdateSpouseDatesRequest>,
 ) -> Result<StatusCode, AppError> {
     let db = db.lock().await;
 
-    if filter.created_by.is_some() {
-        let person: Option<Person> = db.select(("person", id.as_str())).await?;
-        check_ownership(&person.ok_or(AppError::NotFound)?, &filter.created_by)?;
-    }
+    let person: Option<Person> = db.select(("person", id.as_str())).await?;
+    can_write_to_person(&person.ok_or(AppError::NotFound)?, &auth, &db).await?;
     let from = RecordId::new("person", id.as_str());
     let to = parse_record_id(&related_id)?;
     db.query(

@@ -20,6 +20,7 @@ use crate::{
         chat_session::{create_session, delete_session, list_sessions, list_session_messages, append_message},
         research_folder::{create_folder, delete_folder, list_folders, rename_folder},
         research_note::{create_note_reply, create_research_note, delete_research_note, get_research_note, list_note_replies, list_research_notes, set_note_folder, update_research_note},
+        tree_editor::{add_tree_editor, get_my_tree_access, list_tree_editors, remove_tree_editor},
         user_ai_settings::{delete_ai_settings, get_ai_settings, upsert_ai_settings},
     },
     openapi::{openapi_json, swagger_ui},
@@ -52,6 +53,9 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
         .route("/api/trees/{name}", get(get_tree).patch(update_tree).delete(delete_tree))
         .route("/api/trees/{name}/set-primary", patch(set_primary_tree))
         .route("/api/trees/{name}/team", patch(set_tree_team))
+        .route("/api/trees/{name}/editors", get(list_tree_editors).post(add_tree_editor))
+        .route("/api/trees/{name}/editors/{user_id}", delete(remove_tree_editor))
+        .route("/api/trees/{name}/my-access", get(get_my_tree_access))
         .route("/api/trees/{name}/image", post(upload_tree_image)
             .layer(DefaultBodyLimit::max(2 * 1024 * 1024)))
         // Persons

@@ -6,4 +6,5 @@ pub mod person;
 pub mod relationship;
 pub mod research_folder;
 pub mod research_note;
+pub mod tree_editor;
 pub mod user_ai_settings;

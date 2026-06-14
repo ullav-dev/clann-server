@@ -12,7 +12,7 @@ use crate::{
     auth::ClannAuth,
     db::Db,
     error::AppError,
-    handlers::person::{PersonFilter, check_ownership},
+    handlers::person::{PersonFilter, can_write_to_person},
     models::family_tree::FamilyTree,
     models::person::Person,
 };
@@ -79,7 +79,10 @@ pub async fn upload_image(
 ) -> Result<StatusCode, AppError> {
     let person: Option<Person> = db.lock().await.select(("person", id.as_str())).await?;
     let person = person.ok_or(AppError::NotFound)?;
-    check_ownership(&person, &filter.created_by)?;
+    {
+        let db_conn = db.lock().await;
+        can_write_to_person(&person, &auth, &db_conn).await?;
+    }
 
     while let Some(field) = multipart.next_field().await.map_err(|e| AppError::BadRequest(e.to_string()))? {
         let field_name = field.name().unwrap_or("").to_string();
@@ -227,7 +230,10 @@ pub async fn upload_life_image(
 ) -> Result<StatusCode, AppError> {
     let person: Option<Person> = db.lock().await.select(("person", id.as_str())).await?;
     let person = person.ok_or(AppError::NotFound)?;
-    check_ownership(&person, &filter.created_by)?;
+    {
+        let db_conn = db.lock().await;
+        can_write_to_person(&person, &auth, &db_conn).await?;
+    }
 
     while let Some(field) = multipart.next_field().await.map_err(|e| AppError::BadRequest(e.to_string()))? {
         let field_name = field.name().unwrap_or("").to_string();

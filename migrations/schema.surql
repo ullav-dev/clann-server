@@ -115,6 +115,16 @@ DEFINE FIELD IF NOT EXISTS updated_at ON TABLE chat_session TYPE string DEFAULT 
 DEFINE INDEX IF NOT EXISTS idx_session_creator ON TABLE chat_session COLUMNS created_by;
 DEFINE INDEX IF NOT EXISTS idx_session_tree    ON TABLE chat_session COLUMNS tree;
 
+-- Tree editors: per-tree, per-member write access grants for shared team trees
+DEFINE TABLE IF NOT EXISTS tree_editor SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS tree_name          ON TABLE tree_editor TYPE string;
+DEFINE FIELD IF NOT EXISTS user_id            ON TABLE tree_editor TYPE string;
+DEFINE FIELD IF NOT EXISTS granted_by_user_id ON TABLE tree_editor TYPE string;
+DEFINE FIELD IF NOT EXISTS granted_at         ON TABLE tree_editor TYPE string DEFAULT <string>time::now();
+DEFINE INDEX IF NOT EXISTS idx_tree_editor_tree ON TABLE tree_editor COLUMNS tree_name;
+DEFINE INDEX IF NOT EXISTS idx_tree_editor_user ON TABLE tree_editor COLUMNS user_id;
+DEFINE INDEX IF NOT EXISTS unique_tree_editor   ON TABLE tree_editor COLUMNS tree_name, user_id UNIQUE;
+
 DEFINE TABLE IF NOT EXISTS chat_message SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS session_id ON TABLE chat_message TYPE record<chat_session>;
 DEFINE FIELD IF NOT EXISTS role       ON TABLE chat_message TYPE string ASSERT $value IN ["user", "assistant"];
