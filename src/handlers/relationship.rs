@@ -187,13 +187,14 @@ pub async fn delete_relationship(
     Path((id, rel_type, related_id)): Path<(String, String, String)>,
     Query(filter): Query<PersonFilter>,
 ) -> Result<StatusCode, AppError> {
+    // Validate rel_type before any DB lookup so an invalid type always returns 400.
+    let valid = RelationshipType::from_str(&rel_type)
+        .ok_or_else(|| AppError::InvalidRelType(format!("Unknown relationship type: {}", rel_type)))?;
+
     let db = db.lock().await;
 
     let person: Option<Person> = db.select(("person", id.as_str())).await?;
     can_write_to_person(&person.ok_or(AppError::NotFound)?, &auth, &db).await?;
-    // Validate rel_type against the whitelist before embedding it in the query string.
-    let valid = RelationshipType::from_str(&rel_type)
-        .ok_or_else(|| AppError::InvalidRelType(format!("Unknown relationship type: {}", rel_type)))?;
 
     let from = RecordId::new("person", id.as_str());
     let to = parse_record_id(&related_id)?;

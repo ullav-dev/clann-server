@@ -322,7 +322,10 @@ pub async fn delete_person(
 ) -> Result<StatusCode, AppError> {
     let db = db.lock().await;
     let check: Option<Person> = db.select(("person", id.as_str())).await?;
-    can_write_to_person(&check.ok_or(AppError::NotFound)?, &auth, &db).await?;
+    let Some(person) = check else {
+        return Ok(StatusCode::NO_CONTENT);
+    };
+    can_write_to_person(&person, &auth, &db).await?;
     let _: Option<Person> = db.delete(("person", id.as_str())).await?;
     Ok(StatusCode::NO_CONTENT)
 }
