@@ -8,7 +8,7 @@ use surrealdb::types::RecordId;
 
 use crate::{
     auth::ClannAuth,
-    db::Db,
+    db::{Db, DbConn},
     error::{AppError, ErrorResponse},
     models::{family_tree::FamilyTree, person::{CreatePerson, Person, TreeMembershipRequest, UpdatePerson}},
 };
@@ -37,6 +37,84 @@ pub fn check_ownership(person: &Person, created_by: &Option<String>) -> Result<(
         }
     }
     Ok(())
+}
+
+/// Returns `true` if `user_id` (JWT sub UUID) has an editor grant for any of
+/// the given trees.
+pub async fn is_tree_editor(db: &DbConn, user_id: &str, trees: &[String]) -> Result<bool, AppError> {
+    if trees.is_empty() || user_id.is_empty() {
+        return Ok(false);
+    }
+    let grant: Option<serde_json::Value> = db
+        .query(
+            "SELECT id FROM tree_editor \
+             WHERE user_id = $uid AND tree_name IN $trees LIMIT 1",
+        )
+        .bind(("uid", user_id.to_string()))
+        .bind(("trees", trees.to_vec()))
+        .await?
+        .take(0)?;
+    Ok(grant.is_some())
+}
+
+/// Confirms the authenticated caller may write to `person`.
+///
+/// Passes when:
+/// - dev mode (no JWT_SECRET, `auth.user_id` is empty), OR
+/// - the caller is the admin user, OR
+/// - the person was created by the caller (`created_by == auth.username`), OR
+/// - the caller is the team owner of any tree the person belongs to, OR
+/// - the caller has an explicit editor grant for any of those trees.
+///
+/// Returns `AppError::NotFound` on denial (same surface as read auth, so
+/// unauthenticated callers cannot distinguish missing from forbidden).
+pub async fn can_write_to_person(
+    person: &Person,
+    auth: &ClannAuth,
+    db: &DbConn,
+) -> Result<(), AppError> {
+    // Dev mode: no JWT enforcement.
+    if auth.user_id.is_empty() {
+        return Ok(());
+    }
+
+    // Admin bypass.
+    if !auth.username.is_empty() && is_admin(&auth.username) {
+        return Ok(());
+    }
+
+    // Creator can always write their own records.
+    if !auth.username.is_empty()
+        && person.created_by.as_deref() == Some(auth.username.as_str())
+    {
+        return Ok(());
+    }
+
+    // Check team-level and tree-editor access in one pass.
+    if !person.trees.is_empty() {
+        // Fetch team_id for each tree the person belongs to.
+        let trees_info: Vec<serde_json::Value> = db
+            .query("SELECT team_id FROM family_tree WHERE name IN $trees")
+            .bind(("trees", person.trees.clone()))
+            .await?
+            .take(0)?;
+
+        for t in &trees_info {
+            if let Some(tid) = t.get("team_id").and_then(|v| v.as_str()) {
+                // Team owner has full write access to all persons in their team trees.
+                if auth.teams.get(tid).map(|r| r == "owner").unwrap_or(false) {
+                    return Ok(());
+                }
+            }
+        }
+
+        // Per-tree editor grant.
+        if is_tree_editor(db, &auth.user_id, &person.trees).await? {
+            return Ok(());
+        }
+    }
+
+    Err(AppError::NotFound)
 }
 
 #[utoipa::path(
@@ -210,15 +288,14 @@ pub async fn get_person(
 )]
 pub async fn update_person(
     State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
     Path(id): Path<String>,
     Query(filter): Query<PersonFilter>,
     Json(payload): Json<UpdatePerson>,
 ) -> Result<Json<Person>, AppError> {
     let db = db.lock().await;
-    if filter.created_by.is_some() {
-        let check: Option<Person> = db.select(("person", id.as_str())).await?;
-        check_ownership(&check.ok_or(AppError::NotFound)?, &filter.created_by)?;
-    }
+    let check: Option<Person> = db.select(("person", id.as_str())).await?;
+    can_write_to_person(&check.ok_or(AppError::NotFound)?, &auth, &db).await?;
     let body = serde_json::to_value(&payload)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
     let person: Option<Person> = db.update(("person", id.as_str())).merge(body).await?;
@@ -239,14 +316,13 @@ pub async fn update_person(
 )]
 pub async fn delete_person(
     State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
     Path(id): Path<String>,
     Query(filter): Query<PersonFilter>,
 ) -> Result<StatusCode, AppError> {
     let db = db.lock().await;
-    if filter.created_by.is_some() {
-        let check: Option<Person> = db.select(("person", id.as_str())).await?;
-        check_ownership(&check.ok_or(AppError::NotFound)?, &filter.created_by)?;
-    }
+    let check: Option<Person> = db.select(("person", id.as_str())).await?;
+    can_write_to_person(&check.ok_or(AppError::NotFound)?, &auth, &db).await?;
     let _: Option<Person> = db.delete(("person", id.as_str())).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -267,6 +343,7 @@ pub async fn delete_person(
 )]
 pub async fn add_person_to_tree(
     State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
     Path(id): Path<String>,
     Query(filter): Query<PersonFilter>,
     Json(payload): Json<TreeMembershipRequest>,
@@ -275,7 +352,7 @@ pub async fn add_person_to_tree(
 
     let person: Option<Person> = db.select(("person", id.as_str())).await?;
     let person = person.ok_or(AppError::NotFound)?;
-    check_ownership(&person, &filter.created_by)?;
+    can_write_to_person(&person, &auth, &db).await?;
 
     let tree_exists: Option<FamilyTree> = db
         .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
@@ -313,6 +390,7 @@ pub async fn add_person_to_tree(
 )]
 pub async fn remove_person_from_tree(
     State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
     Path((id, tree_name)): Path<(String, String)>,
     Query(filter): Query<PersonFilter>,
 ) -> Result<StatusCode, AppError> {
@@ -320,7 +398,7 @@ pub async fn remove_person_from_tree(
 
     let person: Option<Person> = db.select(("person", id.as_str())).await?;
     let person = person.ok_or(AppError::NotFound)?;
-    check_ownership(&person, &filter.created_by)?;
+    can_write_to_person(&person, &auth, &db).await?;
 
     if person.trees.len() <= 1 {
         return Err(AppError::BadRequest(

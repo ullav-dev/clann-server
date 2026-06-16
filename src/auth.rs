@@ -29,6 +29,9 @@ struct TeamClaim {
 #[derive(Debug, Deserialize)]
 struct RawClaims {
     pub sub: String,
+    /// Login username — used for ownership checks without an extra DB lookup.
+    #[serde(default)]
+    pub username: String,
     #[serde(default)]
     pub subscriptions: HashMap<String, SubscriptionClaim>,
     /// Active team memberships keyed by team UUID string.
@@ -46,6 +49,9 @@ struct RawClaims {
 pub struct ClannAuth {
     /// JWT `sub` — the user's UUID string.
     pub user_id: String,
+    /// Login username from the JWT `username` claim.
+    /// Empty for tokens issued before this claim was added (very old tokens).
+    pub username: String,
     /// Plan tier: "individual", "family", "professional", "enterprise".
     pub tier: String,
     /// Active team memberships: map of team UUID → positional role ("owner"|"leader"|"member").
@@ -128,6 +134,7 @@ pub async fn jwt_middleware(
             // Dev/test mode — no auth enforcement, unlimited plan
             ClannAuth {
                 user_id: String::new(),
+                username: String::new(),
                 tier: "enterprise".to_string(),
                 teams: HashMap::new(),
                 clann_roles: HashMap::new(),
@@ -170,7 +177,7 @@ pub async fn jwt_middleware(
                                 }
                                 teams.insert(id, claim.role);
                             }
-                            ClannAuth { user_id: raw.sub, tier, teams, clann_roles }
+                            ClannAuth { user_id: raw.sub, username: raw.username, tier, teams, clann_roles }
                         }
                     }
                 }

@@ -579,7 +579,7 @@ dependencies = [
 
 [[package]]
 name = "clann-server"
-version = "26.1.1"
+version = "26.2.0"
 dependencies = [
  "anyhow",
  "axum",

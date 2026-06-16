@@ -10,12 +10,24 @@ use crate::{
     auth::ClannAuth,
     db::Db,
     error::{AppError, ErrorResponse},
-    models::life_event::{CreateLifeEvent, LifeEvent, UpdateLifeEvent},
+    handlers::person::can_write_to_person,
+    models::{
+        life_event::{CreateLifeEvent, LifeEvent, UpdateLifeEvent},
+        person::Person,
+    },
 };
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct LifeEventFilter {
     pub created_by: Option<String>,
+}
+
+fn record_id_key(id: &RecordId) -> String {
+    use surrealdb::types::RecordIdKey;
+    match &id.key {
+        RecordIdKey::String(k) => k.clone(),
+        other => format!("{other:?}"),
+    }
 }
 
 /// Check person exists using count() — avoids returning a record-typed `id`
@@ -46,7 +58,7 @@ async fn person_exists(db: &crate::db::DbConn, person_rid: RecordId) -> Result<b
 )]
 pub async fn create_life_event(
     State(db): State<Db>,
-    Extension(_auth): Extension<ClannAuth>,
+    Extension(auth): Extension<ClannAuth>,
     Path(person_id): Path<String>,
     Json(payload): Json<CreateLifeEvent>,
 ) -> Result<(StatusCode, Json<LifeEvent>), AppError> {
@@ -56,6 +68,9 @@ pub async fn create_life_event(
     if !person_exists(&db, person_rid.clone()).await? {
         return Err(AppError::NotFound);
     }
+
+    let person: Option<Person> = db.select(("person", person_id.as_str())).await?;
+    can_write_to_person(&person.ok_or(AppError::NotFound)?, &auth, &db).await?;
 
     // Use a query string so we can bind person_rid as RecordId (keeping the
     // record<person> type in the DB) and get Vec<LifeEvent> back via SurrealValue.
@@ -174,7 +189,7 @@ pub async fn get_life_event(
 )]
 pub async fn update_life_event(
     State(db): State<Db>,
-    Extension(_auth): Extension<ClannAuth>,
+    Extension(auth): Extension<ClannAuth>,
     Path(event_id): Path<String>,
     Json(payload): Json<UpdateLifeEvent>,
 ) -> Result<Json<LifeEvent>, AppError> {
@@ -182,9 +197,11 @@ pub async fn update_life_event(
     let eid = RecordId::new("life_event", event_id.as_str());
 
     let existing: Option<LifeEvent> = db.select(eid.clone()).await?;
-    if existing.is_none() {
-        return Err(AppError::NotFound);
-    }
+    let existing = existing.ok_or(AppError::NotFound)?;
+
+    let person_key = record_id_key(&existing.person_id);
+    let person: Option<Person> = db.select(("person", person_key.as_str())).await?;
+    can_write_to_person(&person.ok_or(AppError::NotFound)?, &auth, &db).await?;
 
     // Use an explicit UPDATE SET with bound parameters rather than MERGE+JSON.
     // The SDK maps Option::None bindings to SurrealDB NONE (not NULL), which is
@@ -233,15 +250,18 @@ pub async fn update_life_event(
 )]
 pub async fn delete_life_event(
     State(db): State<Db>,
-    Extension(_auth): Extension<ClannAuth>,
+    Extension(auth): Extension<ClannAuth>,
     Path(event_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
     let db = db.lock().await;
     let eid = RecordId::new("life_event", event_id.as_str());
     let existing: Option<LifeEvent> = db.select(eid.clone()).await?;
-    if existing.is_none() {
-        return Err(AppError::NotFound);
-    }
+    let existing = existing.ok_or(AppError::NotFound)?;
+
+    let person_key = record_id_key(&existing.person_id);
+    let person: Option<Person> = db.select(("person", person_key.as_str())).await?;
+    can_write_to_person(&person.ok_or(AppError::NotFound)?, &auth, &db).await?;
+
     let _: Option<LifeEvent> = db.delete(eid).await?;
     Ok(StatusCode::NO_CONTENT)
 }
