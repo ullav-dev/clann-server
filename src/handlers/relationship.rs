@@ -11,20 +11,17 @@ use crate::{
     auth::ClannAuth,
     db::{Db, DbConn},
     error::{AppError, ErrorResponse},
-    handlers::person::{PersonFilter, can_write_to_person, check_ownership},
+    handlers::person::{PersonFilter, can_write_to_proxy, fetch_proxy_and_canonical},
     models::{
-        person::Person,
+        person::PersonProxy,
         relationship::{
-            AddRelationshipRequest, FamilyTreeNode, ParentInfo, Pedigree, RelationshipType,
-            RelationshipsResponse, SiblingInfo, SiblingType, SpouseInfo, UpdateRelationshipRequest,
-            UpdateSpouseDatesRequest,
+            AddRelationshipRequest, FamilyTreeNode, ParentInfo, Pedigree, PersonProxyNode,
+            PROXY_NODE_IN, PROXY_NODE_OUT, RelationshipType, RelationshipsResponse, SiblingInfo,
+            SiblingType, SpouseInfo, UpdateRelationshipRequest, UpdateSpouseDatesRequest,
         },
     },
 };
 
-/// Parse a "table:id" string into a SurrealDB `RecordId`.
-/// Binding RecordId directly avoids needing `type::thing()` in SurrealQL,
-/// which is unsupported in the embedded engine.
 fn parse_record_id(s: &str) -> Result<RecordId, AppError> {
     let (tb, id) = s
         .split_once(':')
@@ -39,17 +36,16 @@ fn record_id_key(id: &RecordId) -> String {
     }
 }
 
-
 #[utoipa::path(
     post,
     path = "/api/persons/{id}/relationships",
     params(
-        ("id" = String, Path, description = "Person record ID (without the `person:` prefix)")
+        ("id" = String, Path, description = "Proxy ULID (without the `person_proxy:` prefix)")
     ),
     request_body = AddRelationshipRequest,
     responses(
         (status = 201, description = "Relationship added"),
-        (status = 400, description = "Bad request — e.g. missing sibling_type", body = ErrorResponse),
+        (status = 400, description = "Bad request or cross-tree relationship attempt", body = ErrorResponse),
     ),
     tag = "relationships"
 )]
@@ -57,15 +53,29 @@ pub async fn add_relationship(
     State(db): State<Db>,
     Extension(auth): Extension<ClannAuth>,
     Path(id): Path<String>,
-    Query(filter): Query<PersonFilter>,
     Json(payload): Json<AddRelationshipRequest>,
 ) -> Result<StatusCode, AppError> {
     let db = db.lock().await;
 
-    let person: Option<Person> = db.select(("person", id.as_str())).await?;
-    can_write_to_person(&person.ok_or(AppError::NotFound)?, &auth, &db).await?;
-    let from = RecordId::new("person", id.as_str());
+    let (proxy, _) = fetch_proxy_and_canonical(&db, &id).await?;
+    can_write_to_proxy(&proxy, &auth, &db).await?;
+
+    let from = RecordId::new("person_proxy", id.as_str());
     let to = parse_record_id(&payload.related_id)?;
+
+    // Validate the target proxy is in the same tree.
+    if to.table.to_string() != "person_proxy" {
+        return Err(AppError::BadRequest(
+            "related_id must be a person_proxy record ID".to_string(),
+        ));
+    }
+    let to_proxy: Option<PersonProxy> = db.select(to.clone()).await?;
+    let to_proxy = to_proxy.ok_or(AppError::NotFound)?;
+    if to_proxy.tree != proxy.tree {
+        return Err(AppError::BadRequest(
+            "Relationships must be within the same tree. Use a merge proposal for cross-tree connections.".to_string(),
+        ));
+    }
 
     match payload.rel_type {
         RelationshipType::Father => {
@@ -94,9 +104,6 @@ pub async fn add_relationship(
             };
             let ped = payload.pedigree.as_db_str();
             let vpid_opt = payload.via_parent_id;
-            // Only include via_parent_id in CONTENT when it's set — binding None as $vpid
-            // produces SurrealDB NONE which omits the field anyway, but that causes
-            // deserialization failures on read when the field is absent without #[serde(default)].
             let q = if vpid_opt.is_some() {
                 "RELATE $from->has_sibling->$to CONTENT { sibling_type: $st, pedigree: $ped, via_parent_id: $vpid }"
             } else {
@@ -113,7 +120,6 @@ pub async fn add_relationship(
             qb.await?;
         }
         RelationshipType::Spouse => {
-            // Both directions in a single query — no await gap between them.
             let sp_from = payload.spouse_from.as_deref().unwrap_or_default().to_string();
             let sp_to = payload.spouse_to.as_deref().unwrap_or_default().to_string();
             db.query(
@@ -135,34 +141,30 @@ pub async fn add_relationship(
     get,
     path = "/api/persons/{id}/relationships",
     params(
-        ("id" = String, Path, description = "Person record ID (without the `person:` prefix)")
+        ("id" = String, Path, description = "Proxy ULID (without the `person_proxy:` prefix)")
     ),
     responses(
         (status = 200, description = "Grouped relationships", body = RelationshipsResponse),
-        (status = 404, description = "Person not found", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     ),
     tag = "relationships"
 )]
 pub async fn get_relationships(
     State(db): State<Db>,
     Path(id): Path<String>,
-    Query(filter): Query<PersonFilter>,
+    Query(_filter): Query<PersonFilter>,
 ) -> Result<Json<RelationshipsResponse>, AppError> {
     let db = db.lock().await;
 
-    if filter.created_by.is_some() {
-        let person: Option<Person> = db.select(("person", id.as_str())).await?;
-        check_ownership(&person.ok_or(AppError::NotFound)?, &filter.created_by)?;
-    }
-    let person_id = RecordId::new("person", id.as_str());
+    let proxy: Option<PersonProxy> = db.select(("person_proxy", id.as_str())).await?;
+    proxy.as_ref().ok_or(AppError::NotFound)?;
 
-    let father = fetch_parent_edges(&*db, &person_id, "has_father").await?;
-    let mother = fetch_parent_edges(&*db, &person_id, "has_mother").await?;
+    let proxy_id = RecordId::new("person_proxy", id.as_str());
 
-    let siblings = fetch_sibling_edges(&*db, &person_id).await?;
-
-    // Spouses: bidirectional edges exist, so forward query is sufficient.
-    let spouse = fetch_spouses(&*db, &person_id).await?;
+    let father = fetch_parent_edges(&*db, &proxy_id, "has_father").await?;
+    let mother = fetch_parent_edges(&*db, &proxy_id, "has_mother").await?;
+    let siblings = fetch_sibling_edges(&*db, &proxy_id).await?;
+    let spouse = fetch_spouses(&*db, &proxy_id).await?;
 
     Ok(Json(RelationshipsResponse { father, mother, siblings, spouse }))
 }
@@ -171,9 +173,9 @@ pub async fn get_relationships(
     delete,
     path = "/api/persons/{id}/relationships/{rel_type}/{related_id}",
     params(
-        ("id" = String, Path, description = "Person record ID (without the `person:` prefix)"),
-        ("rel_type" = String, Path, description = "Relationship table: `has_father`, `has_mother`, `has_sibling`, or `has_spouse`"),
-        ("related_id" = String, Path, description = "Full related record ID, e.g. `person:01jd4a8xyz`"),
+        ("id" = String, Path, description = "Proxy ULID"),
+        ("rel_type" = String, Path, description = "`has_father`, `has_mother`, `has_sibling`, or `has_spouse`"),
+        ("related_id" = String, Path, description = "Full related proxy ID, e.g. `person_proxy:01jd4a8xyz`"),
     ),
     responses(
         (status = 204, description = "Relationship deleted"),
@@ -185,22 +187,19 @@ pub async fn delete_relationship(
     State(db): State<Db>,
     Extension(auth): Extension<ClannAuth>,
     Path((id, rel_type, related_id)): Path<(String, String, String)>,
-    Query(filter): Query<PersonFilter>,
 ) -> Result<StatusCode, AppError> {
-    // Validate rel_type before any DB lookup so an invalid type always returns 400.
     let valid = RelationshipType::from_str(&rel_type)
         .ok_or_else(|| AppError::InvalidRelType(format!("Unknown relationship type: {}", rel_type)))?;
 
     let db = db.lock().await;
 
-    let person: Option<Person> = db.select(("person", id.as_str())).await?;
-    can_write_to_person(&person.ok_or(AppError::NotFound)?, &auth, &db).await?;
+    let (proxy, _) = fetch_proxy_and_canonical(&db, &id).await?;
+    can_write_to_proxy(&proxy, &auth, &db).await?;
 
-    let from = RecordId::new("person", id.as_str());
+    let from = RecordId::new("person_proxy", id.as_str());
     let to = parse_record_id(&related_id)?;
 
     if matches!(valid, RelationshipType::Spouse) {
-        // Spouse edges are bidirectional — delete both directions.
         let q = format!(
             "DELETE {rel_type} WHERE (in = $from AND out = $to) OR (in = $to AND out = $from)"
         );
@@ -217,190 +216,169 @@ pub async fn delete_relationship(
     get,
     path = "/api/persons/{id}/family-tree",
     params(
-        ("id" = String, Path, description = "Person record ID (without the `person:` prefix)")
+        ("id" = String, Path, description = "Proxy ULID (without the `person_proxy:` prefix)")
     ),
     responses(
-        (
-            status = 200,
-            description = "Family tree up to 2 generations deep. \
-                           Each node: `{ id, family_name, first_name, \
-                           father: [node…], mother: [node…], children: [node…], spouse: [node…] }`"
-        ),
-        (status = 404, description = "Person not found", body = ErrorResponse),
+        (status = 200, description = "Family tree up to 2 generations deep"),
+        (status = 404, description = "Not found", body = ErrorResponse),
     ),
     tag = "relationships"
 )]
 pub async fn get_family_tree(
     State(db): State<Db>,
     Path(id): Path<String>,
-    Query(filter): Query<PersonFilter>,
 ) -> Result<Json<FamilyTreeNode>, AppError> {
-    let person = {
+    let root_node = {
         let conn = db.lock().await;
-        let p: Option<Person> = conn.select(("person", id.as_str())).await?;
-        p
+        let proxy: Option<PersonProxy> = conn.select(("person_proxy", id.as_str())).await?;
+        let proxy = proxy.ok_or(AppError::NotFound)?;
+        let canonical: Option<crate::models::person::Person> = conn.select(proxy.person_id.clone()).await?;
+        let canonical = canonical.ok_or(AppError::NotFound)?;
+        PersonProxyNode {
+            id: proxy.id,
+            person_id: proxy.person_id,
+            tree: proxy.tree,
+            family_name: proxy.preferred_family_name
+                .clone()
+                .unwrap_or_else(|| canonical.family_name.clone()),
+            first_name: proxy.preferred_first_name
+                .clone()
+                .unwrap_or_else(|| canonical.first_name.clone()),
+            middle_name: proxy.preferred_middle_name
+                .clone()
+                .or_else(|| canonical.middle_name.clone()),
+            sex: canonical.sex,
+            date_of_birth: canonical.date_of_birth,
+            place_of_birth: canonical.place_of_birth,
+            date_of_death: canonical.date_of_death,
+            place_of_death: canonical.place_of_death,
+            biography: proxy.biography,
+            image_path: proxy.image_path,
+            is_private: proxy.is_private,
+            created_by: proxy.created_by,
+        }
     };
-    let person = person.ok_or(AppError::NotFound)?;
-    check_ownership(&person, &filter.created_by)?;
 
-    let node = build_tree_node(db, person, 2, true).await?;
+    let node = build_tree_node(db, root_node, 2, true).await?;
     Ok(Json(node))
 }
 
-/// Recursively build a `FamilyTreeNode` up to `depth` generations.
-/// `include_root_extras` is true only for the root call — fetches children and spouses.
-/// The `Db` (Arc<Mutex<DbConn>>) is locked for each batch of queries and released
-/// before any recursive call, preventing deadlocks.
 fn build_tree_node(
     db: Db,
-    person: Person,
+    node: PersonProxyNode,
     depth: u8,
     include_root_extras: bool,
 ) -> Pin<Box<dyn Future<Output = Result<FamilyTreeNode, AppError>> + Send>> {
     Box::pin(async move {
         let (children, spouse, siblings) = if include_root_extras {
-            let child_persons = {
+            let child_nodes = {
                 let conn = db.lock().await;
-                fetch_children(&*conn, &person.id).await?
+                fetch_children(&*conn, &node.id).await?
             };
-            let spouse_persons = {
+            let spouse_nodes = {
                 let conn = db.lock().await;
-                fetch_spouses(&*conn, &person.id).await?
+                fetch_spouses(&*conn, &node.id).await?
             };
-            let sibling_persons = {
+            let sibling_nodes = {
                 let conn = db.lock().await;
-                fetch_siblings(&*conn, &person.id).await?
+                fetch_sibling_edges(&*conn, &node.id).await?
             };
 
-            let mut child_nodes = Vec::new();
-            for (p, ped) in child_persons {
-                let mut node = build_tree_node(db.clone(), p, 0, false).await?;
-                node.pedigree = Some(ped);
-                child_nodes.push(node);
+            let mut children = Vec::new();
+            for (child, ped) in child_nodes {
+                let mut cn = build_tree_node(db.clone(), child, 0, false).await?;
+                cn.pedigree = Some(ped);
+                children.push(cn);
             }
-            let mut spouse_nodes = Vec::new();
-            for s in spouse_persons {
-                spouse_nodes.push(build_tree_node(db.clone(), s.person, 0, false).await?);
+            let mut spouses = Vec::new();
+            for s in spouse_nodes {
+                spouses.push(build_tree_node(db.clone(), s.person, 0, false).await?);
             }
-            let mut sibling_nodes = Vec::new();
-            for (p, ped, vpid) in sibling_persons {
-                let mut node = build_tree_node(db.clone(), p, 0, false).await?;
-                node.pedigree = Some(ped);
-                node.via_parent_id = vpid;
-                sibling_nodes.push(node);
+            let mut sibs = Vec::new();
+            for s in sibling_nodes {
+                let mut sn = build_tree_node(db.clone(), s.person, 0, false).await?;
+                sn.pedigree = Some(s.pedigree);
+                sn.via_parent_id = s.via_parent_id;
+                sibs.push(sn);
             }
-            (child_nodes, spouse_nodes, sibling_nodes)
+            (children, spouses, sibs)
         } else {
             (vec![], vec![], vec![])
         };
 
         if depth == 0 {
-            return Ok(FamilyTreeNode {
-                id: person.id,
-                family_name: person.family_name,
-                first_name: person.first_name,
-                sex: Some(person.sex),
-                date_of_birth: person.date_of_birth,
-                place_of_birth: person.place_of_birth,
-                biography: person.biography,
-                image_path: person.image_path,
-                pedigree: None,
-                via_parent_id: None,
-                father: vec![],
-                mother: vec![],
-                children,
-                spouse,
-                siblings,
-            });
+            let mut n = FamilyTreeNode::from_proxy_node(node);
+            n.children = children;
+            n.spouse = spouse;
+            n.siblings = siblings;
+            return Ok(n);
         }
 
         let father_edges = {
             let conn = db.lock().await;
-            fetch_parent_edges(&*conn, &person.id, "has_father").await?
+            fetch_parent_edges(&*conn, &node.id, "has_father").await?
         };
         let mother_edges = {
             let conn = db.lock().await;
-            fetch_parent_edges(&*conn, &person.id, "has_mother").await?
+            fetch_parent_edges(&*conn, &node.id, "has_mother").await?
         };
 
         let mut father = Vec::new();
         for pi in father_edges {
-            let mut node = build_tree_node(db.clone(), pi.person, depth - 1, false).await?;
-            node.pedigree = Some(pi.pedigree);
-            father.push(node);
+            let mut fn_node = build_tree_node(db.clone(), pi.person, depth - 1, false).await?;
+            fn_node.pedigree = Some(pi.pedigree);
+            father.push(fn_node);
         }
 
         let mut mother = Vec::new();
         for pi in mother_edges {
-            let mut node = build_tree_node(db.clone(), pi.person, depth - 1, false).await?;
-            node.pedigree = Some(pi.pedigree);
-            mother.push(node);
+            let mut mn_node = build_tree_node(db.clone(), pi.person, depth - 1, false).await?;
+            mn_node.pedigree = Some(pi.pedigree);
+            mother.push(mn_node);
         }
 
-        Ok(FamilyTreeNode {
-            id: person.id,
-            family_name: person.family_name,
-            first_name: person.first_name,
-            sex: Some(person.sex),
-            date_of_birth: person.date_of_birth,
-            place_of_birth: person.place_of_birth,
-            biography: person.biography,
-            image_path: person.image_path,
-            pedigree: None,
-            via_parent_id: None,
-            father,
-            mother,
-            children,
-            spouse,
-            siblings,
-        })
+        let mut result = FamilyTreeNode::from_proxy_node(node);
+        result.father = father;
+        result.mother = mother;
+        result.children = children;
+        result.spouse = spouse;
+        result.siblings = siblings;
+        Ok(result)
     })
 }
 
-/// Fetch siblings with pedigree and via_parent_id for the family-tree endpoint.
-pub async fn fetch_siblings(db: &DbConn, person_id: &RecordId) -> Result<Vec<(Person, Pedigree, Option<String>)>, AppError> {
-    fetch_sibling_edges(db, person_id)
+/// Fetch sibling `PersonProxyNode`s with pedigree and via_parent_id for the family-tree endpoint.
+pub async fn fetch_siblings(
+    db: &DbConn,
+    proxy_id: &RecordId,
+) -> Result<Vec<(PersonProxyNode, Pedigree, Option<String>)>, AppError> {
+    fetch_sibling_edges(db, proxy_id)
         .await
         .map(|v| v.into_iter().map(|s| (s.person, s.pedigree, s.via_parent_id)).collect())
 }
 
-/// Fetch siblings with pedigree and via_parent_id from the edge.
-/// Queries both outgoing and incoming edges to cover the one-directional `has_sibling` table.
-async fn fetch_sibling_edges(db: &DbConn, person_id: &RecordId) -> Result<Vec<SiblingInfo>, AppError> {
-    #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
+async fn fetch_sibling_edges(db: &DbConn, proxy_id: &RecordId) -> Result<Vec<SiblingInfo>, AppError> {
+    #[derive(serde::Deserialize, SurrealValue)]
     struct SiblingEdgeRow {
-        person: Person,
+        person: PersonProxyNode,
         pedigree: Option<String>,
         #[serde(default)]
         via_parent_id: Option<String>,
     }
 
-    // Outgoing: current person is `in`, sibling is `out`
-    let q_out = "SELECT \
-        { id: out.id, family_name: out.family_name, first_name: out.first_name, \
-          middle_name: out.middle_name, sex: out.sex, date_of_birth: out.date_of_birth, \
-          place_of_birth: out.place_of_birth, date_of_death: out.date_of_death, \
-          place_of_death: out.place_of_death, image_path: out.image_path, \
-          nickname: out.nickname, username: out.username, email: out.email, \
-          verified: out.verified, biography: out.biography, \
-          created_by: out.created_by, trees: out.trees } AS person, \
-        pedigree, via_parent_id FROM has_sibling WHERE in = $id";
+    let q_out = format!(
+        "SELECT {} AS person, pedigree, via_parent_id FROM has_sibling WHERE in = $id",
+        PROXY_NODE_OUT
+    );
+    let q_in = format!(
+        "SELECT {} AS person, pedigree, via_parent_id FROM has_sibling WHERE out = $id",
+        PROXY_NODE_IN
+    );
 
-    // Incoming: current person is `out`, sibling is `in`
-    let q_in = "SELECT \
-        { id: in.id, family_name: in.family_name, first_name: in.first_name, \
-          middle_name: in.middle_name, sex: in.sex, date_of_birth: in.date_of_birth, \
-          place_of_birth: in.place_of_birth, date_of_death: in.date_of_death, \
-          place_of_death: in.place_of_death, image_path: in.image_path, \
-          nickname: in.nickname, username: in.username, email: in.email, \
-          verified: in.verified, biography: in.biography, \
-          created_by: in.created_by, trees: in.trees } AS person, \
-        pedigree, via_parent_id FROM has_sibling WHERE out = $id";
-
-    let mut out_res = db.query(q_out).bind(("id", person_id.clone())).await?;
-    let mut in_res  = db.query(q_in).bind(("id", person_id.clone())).await?;
+    let mut out_res = db.query(q_out).bind(("id", proxy_id.clone())).await?;
+    let mut in_res  = db.query(q_in).bind(("id", proxy_id.clone())).await?;
     let out_rows: Vec<SiblingEdgeRow> = out_res.take(0)?;
-    let in_rows: Vec<SiblingEdgeRow>  = in_res.take(0)?;
+    let in_rows:  Vec<SiblingEdgeRow> = in_res.take(0)?;
 
     let mut seen = std::collections::HashSet::new();
     let siblings = out_rows.into_iter().chain(in_rows)
@@ -414,71 +392,58 @@ async fn fetch_sibling_edges(db: &DbConn, person_id: &RecordId) -> Result<Vec<Si
     Ok(siblings)
 }
 
-/// Fetch parents with pedigree from a `has_father` or `has_mother` edge table.
-/// Edges that pre-date the `pedigree` field default to `Pedigree::Birth`.
-async fn fetch_parent_edges(db: &DbConn, person_id: &RecordId, rel: &str) -> Result<Vec<ParentInfo>, AppError> {
-    // Use Option<String> for pedigree — SurrealValue enum deserialization is unreliable;
-    // reading as a plain string and converting manually matches how sibling_type/spouse_from work.
-    #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
+async fn fetch_parent_edges(
+    db: &DbConn,
+    proxy_id: &RecordId,
+    rel: &str,
+) -> Result<Vec<ParentInfo>, AppError> {
+    #[derive(serde::Deserialize, SurrealValue)]
     struct ParentEdgeRow {
-        person: Person,
+        person: PersonProxyNode,
         pedigree: Option<String>,
     }
 
     let query = format!(
-        "SELECT {{ \
-            id: out.id, family_name: out.family_name, first_name: out.first_name, \
-            middle_name: out.middle_name, sex: out.sex, date_of_birth: out.date_of_birth, \
-            place_of_birth: out.place_of_birth, date_of_death: out.date_of_death, \
-            place_of_death: out.place_of_death, image_path: out.image_path, \
-            nickname: out.nickname, username: out.username, email: out.email, \
-            verified: out.verified, biography: out.biography, \
-            created_by: out.created_by, trees: out.trees }} AS person, \
-         pedigree \
-         FROM {} WHERE in = $id",
-        rel
+        "SELECT {} AS person, pedigree FROM {} WHERE in = $id",
+        PROXY_NODE_OUT, rel
     );
 
-    let mut res = db.query(query).bind(("id", person_id.clone())).await?;
+    let mut res = db.query(query).bind(("id", proxy_id.clone())).await?;
     let rows: Vec<ParentEdgeRow> = res.take(0)?;
-    Ok(rows
-        .into_iter()
-        .map(|r| ParentInfo {
-            person: r.person,
-            pedigree: r.pedigree.as_deref().map(Pedigree::from_db_str).unwrap_or(Pedigree::Birth),
-        })
-        .collect())
+    Ok(rows.into_iter().map(|r| ParentInfo {
+        person: r.person,
+        pedigree: r.pedigree.as_deref().map(Pedigree::from_db_str).unwrap_or(Pedigree::Birth),
+    }).collect())
 }
 
-/// Fetch all children of a parent with the pedigree of their relationship to this parent.
-/// The `pedigree` on each returned item reflects the child→parent edge for this specific parent.
-async fn fetch_children(db: &DbConn, parent_id: &RecordId) -> Result<Vec<(Person, Pedigree)>, AppError> {
-    #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
+async fn fetch_children(
+    db: &DbConn,
+    parent_id: &RecordId,
+) -> Result<Vec<(PersonProxyNode, Pedigree)>, AppError> {
+    #[derive(serde::Deserialize, SurrealValue)]
     struct ChildEdgeRow {
-        person: Person,
+        person: PersonProxyNode,
         pedigree: Option<String>,
     }
 
-    // Children stored as child→has_father→parent (or has_mother); `in` is child, `out` is parent.
-    let child_fields = "{ id: in.id, family_name: in.family_name, first_name: in.first_name, \
-        middle_name: in.middle_name, sex: in.sex, date_of_birth: in.date_of_birth, \
-        place_of_birth: in.place_of_birth, date_of_death: in.date_of_death, \
-        place_of_death: in.place_of_death, image_path: in.image_path, \
-        nickname: in.nickname, username: in.username, email: in.email, \
-        verified: in.verified, biography: in.biography, \
-        created_by: in.created_by, trees: in.trees } AS person, pedigree";
-
-    let q_father = format!("SELECT {} FROM has_father WHERE out = $id", child_fields);
-    let q_mother = format!("SELECT {} FROM has_mother WHERE out = $id", child_fields);
+    let q_father = format!(
+        "SELECT {} AS person, pedigree FROM has_father WHERE out = $id",
+        PROXY_NODE_IN
+    );
+    let q_mother = format!(
+        "SELECT {} AS person, pedigree FROM has_mother WHERE out = $id",
+        PROXY_NODE_IN
+    );
 
     let mut father_res = db.query(q_father).bind(("id", parent_id.clone())).await?;
     let mut mother_res = db.query(q_mother).bind(("id", parent_id.clone())).await?;
 
-    let mut all: Vec<ChildEdgeRow> = father_res.take::<Vec<ChildEdgeRow>>(0)?.into_iter()
+    let mut all: Vec<ChildEdgeRow> = father_res
+        .take::<Vec<ChildEdgeRow>>(0)?
+        .into_iter()
         .chain(mother_res.take::<Vec<ChildEdgeRow>>(0)?.into_iter())
         .collect();
 
-    // Deduplicate by ULID key (a child may have both parents in this tree).
     let mut seen = std::collections::HashSet::new();
     all.retain(|r| seen.insert(record_id_key(&r.person.id)));
 
@@ -488,43 +453,35 @@ async fn fetch_children(db: &DbConn, parent_id: &RecordId) -> Result<Vec<(Person
     )).collect())
 }
 
-/// Fetch spouses with edge date attributes.
-/// Because `has_spouse` edges are added bidirectionally, a forward query is sufficient.
-async fn fetch_spouses(db: &DbConn, person_id: &RecordId) -> Result<Vec<SpouseInfo>, AppError> {
-    #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
+async fn fetch_spouses(db: &DbConn, proxy_id: &RecordId) -> Result<Vec<SpouseInfo>, AppError> {
+    #[derive(serde::Deserialize, SurrealValue)]
     struct SpouseEdgeRow {
-        person: Person,
+        person: PersonProxyNode,
         spouse_from: Option<String>,
         spouse_to: Option<String>,
     }
 
-    // Build a sub-object for the person to avoid field name collisions with the edge's own `id`.
-    let query = "SELECT \
-        { id: out.id, family_name: out.family_name, first_name: out.first_name, \
-          middle_name: out.middle_name, sex: out.sex, date_of_birth: out.date_of_birth, \
-          place_of_birth: out.place_of_birth, date_of_death: out.date_of_death, \
-          place_of_death: out.place_of_death, image_path: out.image_path, \
-          nickname: out.nickname, username: out.username, email: out.email, \
-          verified: out.verified, biography: out.biography, \
-          created_by: out.created_by, trees: out.trees } AS person, \
-        spouse_from, spouse_to \
-        FROM has_spouse WHERE in = $id";
+    let query = format!(
+        "SELECT {} AS person, spouse_from, spouse_to FROM has_spouse WHERE in = $id",
+        PROXY_NODE_OUT
+    );
 
-    let mut res = db.query(query).bind(("id", person_id.clone())).await?;
+    let mut res = db.query(query).bind(("id", proxy_id.clone())).await?;
     let rows: Vec<SpouseEdgeRow> = res.take(0)?;
-    Ok(rows
-        .into_iter()
-        .map(|r| SpouseInfo { person: r.person, spouse_from: r.spouse_from, spouse_to: r.spouse_to })
-        .collect())
+    Ok(rows.into_iter().map(|r| SpouseInfo {
+        person: r.person,
+        spouse_from: r.spouse_from,
+        spouse_to: r.spouse_to,
+    }).collect())
 }
 
 #[utoipa::path(
     patch,
     path = "/api/persons/{id}/relationships/{rel_type}/{related_id}",
     params(
-        ("id" = String, Path, description = "Person record ID (without the `person:` prefix)"),
-        ("rel_type" = String, Path, description = "Relationship table: `has_father`, `has_mother`, or `has_sibling`"),
-        ("related_id" = String, Path, description = "Full related record ID, e.g. `person:01jd4a8xyz`"),
+        ("id" = String, Path, description = "Proxy ULID"),
+        ("rel_type" = String, Path, description = "`has_father`, `has_mother`, or `has_sibling`"),
+        ("related_id" = String, Path, description = "Full related proxy ID"),
     ),
     request_body = UpdateRelationshipRequest,
     responses(
@@ -537,13 +494,12 @@ pub async fn update_relationship_pedigree(
     State(db): State<Db>,
     Extension(auth): Extension<ClannAuth>,
     Path((id, rel_type, related_id)): Path<(String, String, String)>,
-    Query(filter): Query<PersonFilter>,
     Json(payload): Json<UpdateRelationshipRequest>,
 ) -> Result<StatusCode, AppError> {
     let db = db.lock().await;
 
-    let person: Option<crate::models::person::Person> = db.select(("person", id.as_str())).await?;
-    can_write_to_person(&person.ok_or(AppError::NotFound)?, &auth, &db).await?;
+    let (proxy, _) = fetch_proxy_and_canonical(&db, &id).await?;
+    can_write_to_proxy(&proxy, &auth, &db).await?;
 
     let valid = RelationshipType::from_str(&rel_type)
         .ok_or_else(|| AppError::InvalidRelType(format!("Unknown relationship type: {}", rel_type)))?;
@@ -552,12 +508,11 @@ pub async fn update_relationship_pedigree(
 
     match valid {
         RelationshipType::Father | RelationshipType::Mother => {
-            // Update the parent edge pedigree.
             let q = format!(
                 "UPDATE {} SET pedigree = $ped WHERE in = $from AND out = $to",
                 rel_type
             );
-            let from = RecordId::new("person", id.as_str());
+            let from = RecordId::new("person_proxy", id.as_str());
             let to = parse_record_id(&related_id)?;
             db.query(q)
                 .bind(("ped", new_ped))
@@ -565,12 +520,13 @@ pub async fn update_relationship_pedigree(
                 .bind(("to", to))
                 .await?;
 
-            // Cascade: update sibling edges whose via_parent_id points to this parent.
-            // Step/adopted/foster parent → step siblings; birth parent → birth siblings.
-            let sib_ped = if payload.pedigree != Pedigree::Birth { "step" } else { "birth" };
+            let sib_ped = match payload.pedigree {
+                Pedigree::Adopted => "adopted",
+                _ => "birth",
+            };
             db.query(
                 "UPDATE has_sibling SET pedigree = $sib_ped \
-                 WHERE (in = $person OR out = $person) AND via_parent_id = $vpid"
+                 WHERE (in = $person OR out = $person) AND via_parent_id = $vpid",
             )
             .bind(("sib_ped", sib_ped))
             .bind(("person", from))
@@ -578,12 +534,11 @@ pub async fn update_relationship_pedigree(
             .await?;
         }
         RelationshipType::Sibling => {
-            let from = RecordId::new("person", id.as_str());
+            let from = RecordId::new("person_proxy", id.as_str());
             let to = parse_record_id(&related_id)?;
-            // Update pedigree; also update via_parent_id if provided.
             db.query(
                 "UPDATE has_sibling SET pedigree = $ped, via_parent_id = $vpid \
-                 WHERE (in = $from AND out = $to) OR (in = $to AND out = $from)"
+                 WHERE (in = $from AND out = $to) OR (in = $to AND out = $from)",
             )
             .bind(("ped", new_ped))
             .bind(("vpid", payload.via_parent_id))
@@ -605,8 +560,8 @@ pub async fn update_relationship_pedigree(
     patch,
     path = "/api/persons/{id}/spouse-dates/{related_id}",
     params(
-        ("id" = String, Path, description = "Person record ID (without the `person:` prefix)"),
-        ("related_id" = String, Path, description = "Full related record ID, e.g. `person:01jd4a8xyz`"),
+        ("id" = String, Path, description = "Proxy ULID"),
+        ("related_id" = String, Path, description = "Full related proxy ID"),
     ),
     request_body = UpdateSpouseDatesRequest,
     responses(
@@ -619,14 +574,14 @@ pub async fn update_spouse_dates(
     State(db): State<Db>,
     Extension(auth): Extension<ClannAuth>,
     Path((id, related_id)): Path<(String, String)>,
-    Query(filter): Query<PersonFilter>,
     Json(payload): Json<UpdateSpouseDatesRequest>,
 ) -> Result<StatusCode, AppError> {
     let db = db.lock().await;
 
-    let person: Option<Person> = db.select(("person", id.as_str())).await?;
-    can_write_to_person(&person.ok_or(AppError::NotFound)?, &auth, &db).await?;
-    let from = RecordId::new("person", id.as_str());
+    let (proxy, _) = fetch_proxy_and_canonical(&db, &id).await?;
+    can_write_to_proxy(&proxy, &auth, &db).await?;
+
+    let from = RecordId::new("person_proxy", id.as_str());
     let to = parse_record_id(&related_id)?;
     db.query(
         "UPDATE has_spouse SET spouse_from = $sf, spouse_to = $st \
@@ -637,5 +592,6 @@ pub async fn update_spouse_dates(
     .bind(("sf", payload.spouse_from))
     .bind(("st", payload.spouse_to))
     .await?;
+
     Ok(StatusCode::NO_CONTENT)
 }
