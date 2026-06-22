@@ -9,10 +9,18 @@ use crate::{
     auth::jwt_middleware,
     db::Db,
     handlers::{
+        contact_request::{
+            accept_contact_request, append_contact_message, create_contact_requests,
+            get_pending_count, ignore_contact_request, list_contact_requests,
+        },
         family_tree::{create_tree, delete_tree, get_tree, list_trees, set_primary_tree, set_tree_team, update_tree},
         image::{get_image, get_life_image, get_tree_image, upload_image, upload_life_image, upload_tree_image},
-        life_event::{create_life_event, delete_life_event, get_life_event, list_life_events, update_life_event},
-        person::{add_person_to_tree, create_person, delete_person, get_person, list_persons, remove_person_from_tree, update_person},
+        life_event::{create_life_event, delete_life_event, get_life_event, list_life_events, promote_life_event, update_life_event},
+        merge::{
+            accept_merge_proposal, create_merge_proposal,
+            get_merge_proposal, list_merge_proposals, reject_merge_proposal,
+        },
+        person::{add_person_to_tree, collapse_same_tree_duplicate, create_person, delete_person, find_duplicates, get_person, list_persons, list_proxy_links, remove_person_from_tree, update_canonical, update_person},
         relationship::{
             add_relationship, delete_relationship, get_family_tree, get_relationships,
             update_relationship_pedigree, update_spouse_dates,
@@ -64,6 +72,10 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
             "/api/persons/{id}",
             get(get_person).put(update_person).delete(delete_person),
         )
+        .route("/api/persons/{id}/canonical", patch(update_canonical))
+        .route("/api/persons/{id}/linked-proxies", get(list_proxy_links))
+        .route("/api/persons/{id}/collapse-into/{survivor_id}", post(collapse_same_tree_duplicate))
+        .route("/api/persons/{id}/find-duplicates", get(find_duplicates))
         .route("/api/persons/{id}/trees", post(add_person_to_tree))
         .route("/api/persons/{id}/trees/{tree_name}", delete(remove_person_from_tree))
         // Image uploads (GET is in public_routes above).
@@ -95,6 +107,18 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
             "/api/life-events/{event_id}",
             get(get_life_event).put(update_life_event).delete(delete_life_event),
         )
+        .route("/api/life-events/{event_id}/promote", patch(promote_life_event))
+        // Contact requests (cross-user duplicate communication, precedes merge)
+        .route("/api/contact-requests", post(create_contact_requests).get(list_contact_requests))
+        .route("/api/contact-requests/pending-count", get(get_pending_count))
+        .route("/api/contact-requests/{id}/accept", patch(accept_contact_request))
+        .route("/api/contact-requests/{id}/ignore", patch(ignore_contact_request))
+        .route("/api/contact-requests/{id}/messages", post(append_contact_message))
+        // Merge proposals
+        .route("/api/merge-proposals", post(create_merge_proposal).get(list_merge_proposals))
+        .route("/api/merge-proposals/{id}", get(get_merge_proposal))
+        .route("/api/merge-proposals/{id}/accept", patch(accept_merge_proposal))
+        .route("/api/merge-proposals/{id}/reject", patch(reject_merge_proposal))
         // Research Notes
         .route("/api/notes", post(create_research_note).get(list_research_notes))
         .route(

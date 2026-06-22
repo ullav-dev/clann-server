@@ -10,7 +10,7 @@ use surrealdb::{
 
 use crate::config::Config;
 use crate::models::life_event::LifeEvent;
-use crate::models::person::Person;
+use crate::models::person::{Person, PersonProxy};
 
 pub type DbConn = Surreal<Any>;
 
@@ -51,12 +51,11 @@ fn record_key(id: &RecordId) -> String {
     }
 }
 
-/// Returns true if a life_event with the given person_id and event_type exists.
-/// Uses count() so the query never returns a record-typed field into serde_json::Value.
-async fn life_event_exists(db: &DbConn, person_rid: RecordId, event_type: &str) -> anyhow::Result<bool> {
+/// Returns true if a life_event with the given proxy ID and event_type already exists.
+async fn life_event_exists(db: &DbConn, proxy_rid: RecordId, event_type: &str) -> anyhow::Result<bool> {
     let result: Option<serde_json::Value> = db
-        .query("SELECT count() AS n FROM life_event WHERE person_id = $pid AND event_type = $et GROUP ALL")
-        .bind(("pid", person_rid))
+        .query("SELECT count() AS n FROM life_event WHERE person_proxy_id = $pid AND event_type = $et GROUP ALL")
+        .bind(("pid", proxy_rid))
         .bind(("et", event_type.to_string()))
         .await?
         .take(0)?;
@@ -68,34 +67,38 @@ async fn life_event_exists(db: &DbConn, person_rid: RecordId, event_type: &str) 
 // ── seed ──────────────────────────────────────────────────────────────────────
 
 async fn seed_life_events(db: &DbConn) -> anyhow::Result<()> {
-    // Query persons using the Person model (SurrealValue — handles RecordId id field).
-    let persons: Vec<Person> = db
+    // Fetch proxies for canonical persons that have date/place data worth seeding.
+    let proxies: Vec<PersonProxy> = db
         .query(
-            "SELECT * FROM person \
-             WHERE date_of_birth != NONE OR place_of_birth != NONE \
-                OR date_of_death  != NONE OR place_of_death != NONE",
+            "SELECT * FROM person_proxy \
+             WHERE person_id.date_of_birth != NONE OR person_id.place_of_birth != NONE \
+                OR person_id.date_of_death  != NONE OR person_id.place_of_death != NONE",
         )
         .await?
         .take(0)?;
 
     let mut seeded = 0usize;
 
-    for p in &persons {
-        let pid = RecordId::new("person", record_key(&p.id).as_str());
+    for proxy in &proxies {
+        let canonical: Option<Person> = db.select(proxy.person_id.clone()).await?;
+        let Some(p) = canonical else { continue };
+        let proxy_rid = RecordId::new("person_proxy", record_key(&proxy.id).as_str());
 
         if p.date_of_birth.is_some() || p.place_of_birth.is_some() {
-            if !life_event_exists(db, pid.clone(), "Birth").await? {
+            if !life_event_exists(db, proxy_rid.clone(), "Birth").await? {
                 let _: Vec<LifeEvent> = db
                     .query(
                         "CREATE life_event SET \
-                         person_id = $pid, name = 'Birth', date = $date, \
+                         person_proxy_id = $pid, name = 'Birth', date = $date, \
                          event_type = 'Birth', description = $desc, \
+                         is_canonical = true, contributed_by_tree = $tree, \
                          verified = false, created_by = $creator",
                     )
-                    .bind(("pid",     pid.clone()))
+                    .bind(("pid",     proxy_rid.clone()))
                     .bind(("date",    p.date_of_birth.clone()))
                     .bind(("desc",    p.place_of_birth.clone()))
-                    .bind(("creator", p.created_by.clone()))
+                    .bind(("tree",    proxy.tree.clone()))
+                    .bind(("creator", proxy.created_by.clone()))
                     .await?
                     .take(0)?;
                 seeded += 1;
@@ -103,18 +106,20 @@ async fn seed_life_events(db: &DbConn) -> anyhow::Result<()> {
         }
 
         if p.date_of_death.is_some() || p.place_of_death.is_some() {
-            if !life_event_exists(db, pid.clone(), "Death").await? {
+            if !life_event_exists(db, proxy_rid.clone(), "Death").await? {
                 let _: Vec<LifeEvent> = db
                     .query(
                         "CREATE life_event SET \
-                         person_id = $pid, name = 'Death', date = $date, \
+                         person_proxy_id = $pid, name = 'Death', date = $date, \
                          event_type = 'Death', description = $desc, \
+                         is_canonical = true, contributed_by_tree = $tree, \
                          verified = false, created_by = $creator",
                     )
-                    .bind(("pid",     pid.clone()))
+                    .bind(("pid",     proxy_rid.clone()))
                     .bind(("date",    p.date_of_death.clone()))
                     .bind(("desc",    p.place_of_death.clone()))
-                    .bind(("creator", p.created_by.clone()))
+                    .bind(("tree",    proxy.tree.clone()))
+                    .bind(("creator", proxy.created_by.clone()))
                     .await?
                     .take(0)?;
                 seeded += 1;
@@ -122,34 +127,33 @@ async fn seed_life_events(db: &DbConn) -> anyhow::Result<()> {
         }
     }
 
-    // Marriage events: query spouse edges and seed one event per person per marriage.
-    // We select the partner's name via traversal so we never bind a raw record ID from
-    // an edge `in`/`out` field (which would require its own SurrealValue wrapper).
+    // Marriage events: spouse edges are now between proxies.
+    // Traverse out.person_id.* for the partner's canonical name.
     let spouse_pairs: Vec<serde_json::Value> = db
         .query(
             "SELECT \
-               <string>in  AS person_a, \
-               <string>out AS person_b, \
-               out.first_name  AS partner_first, \
-               out.family_name AS partner_family, \
+               <string>in  AS proxy_a, \
+               out.person_id.first_name  AS partner_first, \
+               out.person_id.family_name AS partner_family, \
                spouse_from, \
-               in.created_by AS created_by \
+               in.created_by AS created_by, \
+               in.tree AS tree \
              FROM has_spouse WHERE in < out",
         )
         .await?
         .take(0)?;
 
     for row in &spouse_pairs {
-        let person_a_str = row.get("person_a").and_then(|v| v.as_str()).unwrap_or("");
+        let proxy_a_str = row.get("proxy_a").and_then(|v| v.as_str()).unwrap_or("");
         let partner_first  = row.get("partner_first").and_then(|v| v.as_str()).unwrap_or("");
         let partner_family = row.get("partner_family").and_then(|v| v.as_str()).unwrap_or("");
         let spouse_from    = row.get("spouse_from").and_then(|v| v.as_str()).map(String::from);
         let created_by     = row.get("created_by").and_then(|v| v.as_str()).map(String::from);
+        let tree           = row.get("tree").and_then(|v| v.as_str()).map(String::from);
 
-        if person_a_str.is_empty() { continue; }
-        // person_a_str is like "person:xxxxx"
-        let key_a = person_a_str.strip_prefix("person:").unwrap_or(person_a_str);
-        let pid_a = RecordId::new("person", key_a);
+        if proxy_a_str.is_empty() { continue; }
+        let key_a = proxy_a_str.strip_prefix("person_proxy:").unwrap_or(proxy_a_str);
+        let pid_a = RecordId::new("person_proxy", key_a);
 
         if !life_event_exists(db, pid_a.clone(), "Marriage").await? {
             let partner_name = format!("{} {}", partner_first, partner_family).trim().to_string();
@@ -162,12 +166,15 @@ async fn seed_life_events(db: &DbConn) -> anyhow::Result<()> {
             let _: Vec<LifeEvent> = db
                 .query(
                     "CREATE life_event SET \
-                     person_id = $pid, name = $name, date = $date, \
-                     event_type = 'Marriage', verified = false, created_by = $creator",
+                     person_proxy_id = $pid, name = $name, date = $date, \
+                     event_type = 'Marriage', is_canonical = true, \
+                     contributed_by_tree = $tree, \
+                     verified = false, created_by = $creator",
                 )
                 .bind(("pid",     pid_a))
                 .bind(("name",    event_name))
                 .bind(("date",    spouse_from))
+                .bind(("tree",    tree))
                 .bind(("creator", created_by))
                 .await?
                 .take(0)?;

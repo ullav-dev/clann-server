@@ -33,19 +33,30 @@ pub enum AppError {
 
     #[error("Bad request: {0}")]
     BadRequest(String),
+
+    /// 409 Conflict — body is a free-form JSON payload (e.g. merge conflict details).
+    #[error("Conflict")]
+    Conflict(serde_json::Value),
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, message) = match &self {
-            AppError::Database(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-            AppError::NotFound => (StatusCode::NOT_FOUND, "Not found".to_string()),
-            AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
-            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
-            AppError::InvalidRelType(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
-            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
-        };
-
-        (status, Json(json!({ "error": message }))).into_response()
+        match self {
+            AppError::Conflict(body) => {
+                (StatusCode::CONFLICT, Json(body)).into_response()
+            }
+            other => {
+                let (status, message) = match &other {
+                    AppError::Database(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+                    AppError::NotFound => (StatusCode::NOT_FOUND, "Not found".to_string()),
+                    AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
+                    AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
+                    AppError::InvalidRelType(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+                    AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+                    AppError::Conflict(_) => unreachable!(),
+                };
+                (status, Json(json!({ "error": message }))).into_response()
+            }
+        }
     }
 }
