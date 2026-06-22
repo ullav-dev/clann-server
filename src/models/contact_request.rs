@@ -45,12 +45,37 @@ pub struct AppendContactMessage {
     pub text: String,
 }
 
+/// A single candidate duplicate found by the scored matching algorithm.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DuplicateMatch {
+    /// Full proxy record ID: `person_proxy:<ulid>`.
+    pub proxy_id: String,
+    /// Full canonical record ID: `person:<ulid>`.
+    pub canonical_id: String,
+    pub tree: String,
+    /// Username of the tree owner.
+    pub owner: String,
+    pub family_name: String,
+    pub first_name: String,
+    pub sex: Option<String>,
+    pub date_of_birth: Option<String>,
+    pub place_of_birth: Option<String>,
+    /// Confidence score: sex(+3) + dob_year(+2) + place(+2) = max 7, min 0.
+    pub score: u32,
+    /// `"strong"` (≥4), `"likely"` (2–3), or `"possible"` (0–1).
+    pub confidence: String,
+    /// True when the match is in a tree owned by the same user (no contact request needed).
+    pub is_own: bool,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct DuplicateSearchResult {
-    /// Number of possible duplicate records found across all other trees.
+    /// Total number of candidate matches.
     pub count: u64,
-    /// Usernames of users who own records that may be duplicates.
+    /// Distinct owner usernames across all matches (kept for backward compat).
     pub owners: Vec<String>,
+    /// Scored candidate matches, highest confidence first.
+    pub matches: Vec<DuplicateMatch>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

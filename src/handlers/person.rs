@@ -888,6 +888,8 @@ pub async fn find_duplicates(
     Extension(auth): Extension<ClannAuth>,
     Path(id): Path<String>,
 ) -> Result<Json<crate::models::contact_request::DuplicateSearchResult>, AppError> {
+    use crate::models::contact_request::{DuplicateMatch, DuplicateSearchResult};
+
     let db = db.lock().await;
     let (proxy, canonical) = fetch_proxy_and_canonical(&db, &id).await?;
 
@@ -897,30 +899,143 @@ pub async fn find_duplicates(
         auth.username.clone()
     };
 
+    // Fetch all proxies with the same name pointing to a different canonical.
+    // No owner filter — same-user cross-tree duplicates are valid (e.g. after GEDCOM imports).
     let mut res = db
         .query(
-            "SELECT count() AS count, array::group(created_by) AS owners \
+            "SELECT meta::id(id) AS proxy_key, \
+                    meta::id(person_id) AS canonical_key, \
+                    tree, created_by, \
+                    person_id.sex AS sex, \
+                    person_id.date_of_birth AS dob, \
+                    person_id.place_of_birth AS pob \
              FROM person_proxy \
              WHERE string::lowercase(person_id.family_name) = string::lowercase($family_name) \
                AND string::lowercase(person_id.first_name) = string::lowercase($first_name) \
                AND person_id != $canonical_id \
-               AND created_by != $requester \
-             GROUP ALL",
+               AND id != $self_id",
         )
         .bind(("family_name", canonical.family_name.clone()))
         .bind(("first_name", canonical.first_name.clone()))
         .bind(("canonical_id", canonical.id.clone()))
-        .bind(("requester", requester))
+        .bind(("self_id", proxy.id.clone()))
         .await?;
 
-    let row: Option<serde_json::Value> = res.take(0)?;
-    let count = row.as_ref().and_then(|v| v.get("count")).and_then(|v| v.as_u64()).unwrap_or(0);
-    let owners: Vec<String> = row
-        .as_ref()
-        .and_then(|v| v.get("owners"))
-        .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
-        .unwrap_or_default();
+    let rows: Vec<serde_json::Value> = res.take(0)?;
 
-    Ok(Json(crate::models::contact_request::DuplicateSearchResult { count, owners }))
+    let my_sex = match &canonical.sex {
+        crate::models::person::Sex::Male => "Male",
+        crate::models::person::Sex::Female => "Female",
+    };
+    let my_dob = canonical.date_of_birth.as_deref();
+    let my_pob = canonical.place_of_birth.as_deref();
+
+    let mut matches: Vec<DuplicateMatch> = rows
+        .into_iter()
+        .filter_map(|row| {
+            let proxy_key = row.get("proxy_key").and_then(|v| v.as_str())?.to_string();
+            let canonical_key = row.get("canonical_key").and_then(|v| v.as_str())?.to_string();
+            let tree = row.get("tree").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let owner = row.get("created_by").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let sex = row.get("sex").and_then(|v| v.as_str()).map(str::to_string);
+            let dob = row.get("dob").and_then(|v| v.as_str()).map(str::to_string);
+            let pob = row.get("pob").and_then(|v| v.as_str()).map(str::to_string);
+
+            // Sex: hard disqualifier when both are set and they differ.
+            let mut score: i32 = 0;
+            if let Some(cand_sex) = sex.as_deref() {
+                if cand_sex == my_sex {
+                    score += 3;
+                } else {
+                    return None; // sex mismatch — not the same person
+                }
+            }
+
+            // Date of birth: year-level fuzzy match.
+            if let (Some(my_y), Some(cand_dob)) = (my_dob.and_then(extract_year), dob.as_deref()) {
+                if let Some(cand_y) = extract_year(cand_dob) {
+                    if my_y == cand_y {
+                        score += 2;
+                    } else if my_y.abs_diff(cand_y) == 1 {
+                        score += 1; // off-by-one transcription error
+                    }
+                }
+            }
+
+            // Place of birth: substring containment ("Dublin" ↔ "Dublin, Ireland").
+            if let (Some(my_p), Some(cand_pob)) = (my_pob, pob.as_deref()) {
+                let a = my_p.to_lowercase();
+                let b = cand_pob.to_lowercase();
+                if a == b {
+                    score += 3;
+                } else if a.contains(&*b) || b.contains(&*a) {
+                    score += 2;
+                } else if shares_significant_word(&a, &b) {
+                    score += 1;
+                }
+            }
+
+            let score = score as u32;
+            let confidence = match score {
+                s if s >= 4 => "strong",
+                s if s >= 2 => "likely",
+                _ => "possible",
+            }
+            .to_string();
+
+            Some(DuplicateMatch {
+                proxy_id: format!("person_proxy:{proxy_key}"),
+                canonical_id: format!("person:{canonical_key}"),
+                tree,
+                is_own: owner == requester,
+                owner,
+                family_name: canonical.family_name.clone(),
+                first_name: canonical.first_name.clone(),
+                sex,
+                date_of_birth: dob,
+                place_of_birth: pob,
+                score,
+                confidence,
+            })
+        })
+        .collect();
+
+    // Highest confidence first.
+    matches.sort_by(|a, b| b.score.cmp(&a.score));
+
+    let count = matches.len() as u64;
+    let owners: Vec<String> = {
+        let mut seen = std::collections::HashSet::new();
+        matches.iter().filter_map(|m| {
+            if seen.insert(m.owner.clone()) { Some(m.owner.clone()) } else { None }
+        }).collect()
+    };
+
+    Ok(Json(DuplicateSearchResult { count, owners, matches }))
+}
+
+/// Extract the first 4-digit year in the range 1700–2099 from a freeform date string.
+fn extract_year(s: &str) -> Option<u32> {
+    let bytes = s.as_bytes();
+    for i in 0..bytes.len().saturating_sub(3) {
+        if bytes[i..i + 4].iter().all(|b| b.is_ascii_digit()) {
+            if let Ok(y) = s[i..i + 4].parse::<u32>() {
+                if (1700..=2099).contains(&y) {
+                    return Some(y);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// True when two normalised place strings share at least one word longer than 3 chars.
+fn shares_significant_word(a: &str, b: &str) -> bool {
+    let words_b: std::collections::HashSet<&str> = b
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|w| w.len() > 3)
+        .collect();
+    a.split(|c: char| !c.is_alphabetic())
+        .filter(|w| w.len() > 3)
+        .any(|w| words_b.contains(w))
 }
