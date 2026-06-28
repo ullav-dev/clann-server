@@ -4,58 +4,117 @@ use axum::{
 };
 use clann_server::{db::Db, routes::build_router};
 use http_body_util::BodyExt;
-use jsonwebtoken::{encode, EncodingKey, Header};
+use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::{atomic::{AtomicU64, Ordering}, Arc};
 use surrealdb::{engine::any, opt::auth::Root};
 use tokio::sync::Mutex;
 use tower::ServiceExt;
+use ullav_mcp_auth::TokenValidator;
+use wiremock::{matchers::{method, path}, Mock, MockServer, ResponseTemplate};
 
 static DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const TEST_TREE: &str = "test-tree";
-const TEST_JWT_SECRET: &str = "test-secret";
+const TEST_ISSUER: &str = "http://localhost:8081";
+const TEST_KID: &str = "87876bda381be12e";
+const TEST_KEY_N: &str = "ppZXUbBOwuRxQT63A0Fqoa_4_miOQq7WLyGo9o8T8tbRY_zBUEsChyEi3MgC6PZmPte_7_lq5FzWKGs9geylNdNS7MvljElZees6jxbjbyjlmMRZr2W6r3mxliPs3UNZNpSsvScpDhiAPX0Dm-fgrusO0iWTUodRYayZ8Tg3nI3ELw_3Aq6bNvmpED8vE0e-qE8AwNLcp1fuMCf2pagORPTgJw17IAQeWFtgNrshqyLpvDk4s5W6Fliv_EjvtflUSD07hpA25Zd5aOjM2hlx4mXQLI5gknAb9AxMiJxSQvv4TiegHNjfE2eHork2EvwRA-groPXQvMCw1-otFmFlaw";
+const TEST_KEY_E: &str = "AQAB";
+const TEST_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCmlldRsE7C5HFB
+PrcDQWqhr/j+aI5CrtYvIaj2jxPy1tFj/MFQSwKHISLcyALo9mY+17/v+WrkXNYo
+az2B7KU101Lsy+WMSVl56zqPFuNvKOWYxFmvZbqvebGWI+zdQ1k2lKy9JykOGIA9
+fQOb5+Cu6w7SJZNSh1FhrJnxODecjcQvD/cCrps2+akQPy8TR76oTwDA0tynV+4w
+J/alqA5E9OAnDXsgBB5YW2A2uyGrIum8OTizlboWWK/8SO+1+VRIPTuGkDbll3lo
+6MzaGXHiZdAsjmCScBv0DEyInFJC+/hOJ6Ac2N8TZ4eiuTYS/BED6Cug9dC8wLDX
+6i0WYWVrAgMBAAECggEAB2yKdlYtzGWzM73Vw3a2Mn/N0ENcmQAtr2qymvpZYJMj
+lcR9NlTWx1WPYNjRDbdywGOLvD1t/sCxvUS6OFYRhB/ngYISDXnKBl2YqH5+ou+R
+poiUQ/V7/Qymq2hCdWyQ8evCSakQcqkI3gn6OofPmDwFgbwG9WtDvInypQYPrxGt
+PxeicsMyqjsnB6RJ8vLX8qzD1ISzTcwuBb01hGuMoL7jecalnaZNOPsFwcgnJeX9
+UPRbTgLWuAhUpcWJ2BcKi1axiDR+shj7WpFiZkT53qFYLsuAX2n7XtmyTnIzC4bt
+ujr/I6T5HECu4rcyj3zGOOjxE31yxSiG6o3Krq0HIQKBgQDSIxLoPoOkAsXqSdWf
+YRPj3/l+H+1MAOgywxQ2kCWZ1M2eHch7cDaJC2yuLYwSOLySthsM1BN1wQdukq4D
+iM9ojqa6/fd/4mz6kLbcbCWNNIFYSOH/zauXjO6QkuGx06EY3bHxhhcNORq8K0RO
+qPHpNBFLNVT8Y9AdeKJXGcegwwKBgQDK8gZjk+6nQfM9ge3GdRHEccn700dmPeJ0
+Qqmy+AYS08R8HrRAlMFaOmMmA/24Bl9HoaPJnPCVxcUDK9LvqBcMpgVVcoGN8I3D
+xyBEBUsfjpULIZUxtROChLUJI44z8l3cH7Lb/pWxuS+YRcfEwtwEmo/wVclNMcrD
+IpBcdg1eOQKBgAq0xMLWZIiXp5O/PUYIgSXsBF8bq1Bi/3GOpNn+0BudTviOVeeM
+GQs0bM4W/frzrw/efVRS/cbTFdjZWkpNzxtpoS8Hv3NhiuHdO6PRUrx1/10LIZCR
+3vsyr/jnst4HhT6qFOXUShpfXXBW1/0V+HVENNlbF0BgqXrG6aZ8ZsJXAoGBAJf3
+4gbg+J2wieduCtJISdSzbI+xJ08NWiy62n5UsZ+ZihFzoICXo63f+Oy3ol8SDnkC
+Nja72YAdxyhXwa2KTjA/hdD1XMQf9Ng8nRGycQ2hZEQgkqrVMFXU8Ad2435MqDI0
+XmfUXN3nkRdScYQKclzULKLIamPuvCmhET7be6kpAoGAHyCJt5Rk4bgSye5w9yL6
+QTXa5JJsPIvCAkiD3vQWWT/H5P+xdkbg4i0thWs4J00IeiRecvXYrNl9FdJwxA9/
+2v54uCFCedfo4O6RM/Ej072W8FJtUyr7zeC+wJSBe1d9C6nG41a0IGcMeW8ksiGD
+lpBVpUpFyamQ/8kYl9RLMRM=
+-----END PRIVATE KEY-----";
 
-// ── JWT token builder ─────────────────────────────────────────────────────────
+// ── JWT token builder (RS256) ─────────────────────────────────────────────────
 
 #[derive(Serialize)]
 struct TestClaims {
     sub: String,
+    iss: String,
     exp: u64,
     subscriptions: Value,
 }
 
-/// Build a signed JWT with the given Clann subscription tier and status.
-/// Uses `TEST_JWT_SECRET` as the signing key.
+fn rs256_header() -> Header {
+    let mut h = Header::new(Algorithm::RS256);
+    h.kid = Some(TEST_KID.into());
+    h
+}
+
+fn rs256_key() -> EncodingKey {
+    EncodingKey::from_rsa_pem(TEST_KEY_PEM.as_bytes()).expect("test RSA key")
+}
+
+/// Build an RS256-signed JWT with the given Clann subscription tier and status.
 fn make_clann_jwt(tier: &str, status: &str) -> String {
     let claims = TestClaims {
         sub: "test-user-id".to_string(),
+        iss: TEST_ISSUER.to_string(),
         exp: 9_999_999_999,
         subscriptions: json!({ "clann": { "tier": tier, "status": status } }),
     };
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
-    )
-    .unwrap()
+    encode(&rs256_header(), &claims, &rs256_key()).unwrap()
 }
 
-/// Build a signed JWT with no subscriptions claim at all.
+/// Build an RS256-signed JWT with no subscriptions claim at all.
 fn make_jwt_no_subs() -> String {
     #[derive(Serialize)]
-    struct NoClaims { sub: String, exp: u64 }
-    let claims = NoClaims { sub: "test-user-id".to_string(), exp: 9_999_999_999 };
-    encode(&Header::default(), &claims, &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes())).unwrap()
+    struct NoClaims { sub: String, iss: String, exp: u64 }
+    let claims = NoClaims {
+        sub: "test-user-id".to_string(),
+        iss: TEST_ISSUER.to_string(),
+        exp: 9_999_999_999,
+    };
+    encode(&rs256_header(), &claims, &rs256_key()).unwrap()
+}
+
+/// Start a mock JWKS server serving the test RSA public key.
+async fn start_jwks_server() -> MockServer {
+    let jwks = serde_json::json!({
+        "keys": [{
+            "kty": "RSA", "use": "sig", "alg": "RS256",
+            "kid": TEST_KID, "n": TEST_KEY_N, "e": TEST_KEY_E,
+        }]
+    });
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/oauth2/jwks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(jwks))
+        .mount(&server)
+        .await;
+    server
 }
 
 // ── Auth-enabled setup ────────────────────────────────────────────────────────
 
-/// Like `setup()` but with JWT enforcement enabled.
-/// Returns both the router (for HTTP requests) and the raw DB handle
-/// (for direct data seeding in limit tests).
-async fn setup_with_auth() -> (axum::Router, Db) {
+/// Like `setup()` but with RS256 JWT enforcement enabled via a mock JWKS server.
+/// Returns the router, the raw DB handle, and the mock server (keep alive while testing).
+async fn setup_with_auth() -> (axum::Router, Db, MockServer) {
     let n = DB_COUNTER.fetch_add(1, Ordering::SeqCst);
     let conn = any::connect("mem://").await.unwrap();
     conn.signin(Root { username: "root".to_string(), password: "root".to_string() })
@@ -70,14 +129,22 @@ async fn setup_with_auth() -> (axum::Router, Db) {
     .await
     .unwrap();
 
+    let mock_server = start_jwks_server().await;
+    let validator = TokenValidator::new(
+        format!("{}/oauth2/jwks", mock_server.uri()),
+        TEST_ISSUER,
+        String::new(),
+    );
+
     let db: Db = Arc::new(Mutex::new(conn));
     let router = build_router(
         db.clone(),
         std::env::temp_dir().to_string_lossy().into_owned(),
         true,
-        Some(TEST_JWT_SECRET.to_string()),
+        Some(validator),
+        None, // MCP disabled in tests
     );
-    (router, db)
+    (router, db, mock_server)
 }
 
 // ── Request helpers (auth-enabled variants) ───────────────────────────────────
@@ -127,7 +194,7 @@ async fn setup() -> axum::Router {
     .unwrap();
 
     let db: Db = Arc::new(Mutex::new(conn));
-    build_router(db, std::env::temp_dir().to_string_lossy().into_owned(), true, None)
+    build_router(db, std::env::temp_dir().to_string_lossy().into_owned(), true, None, None)
 }
 
 async fn response_json(response: axum::response::Response) -> Value {
@@ -1402,7 +1469,7 @@ async fn test_list_persons_filter_by_tree() {
 
 #[tokio::test]
 async fn test_missing_jwt_returns_401() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     // POST /api/persons with no Authorization header
     let response = app
         .oneshot(post_json(
@@ -1416,7 +1483,7 @@ async fn test_missing_jwt_returns_401() {
 
 #[tokio::test]
 async fn test_invalid_jwt_returns_401() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let response = app
         .oneshot(
             Request::builder()
@@ -1437,7 +1504,7 @@ async fn test_invalid_jwt_returns_401() {
 
 #[tokio::test]
 async fn test_valid_jwt_allows_request() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("individual", "active");
     let response = app
         .oneshot(post_json_auth(
@@ -1454,7 +1521,7 @@ async fn test_valid_jwt_allows_request() {
 async fn test_jwt_with_no_subscriptions_treated_as_individual() {
     // No subscriptions claim → defaults to individual (limit=2 trees / 100 members)
     // Just confirm the request is accepted (not 401)
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_jwt_no_subs();
     let response = app
         .oneshot(post_json_auth(
@@ -1472,7 +1539,7 @@ async fn test_jwt_with_no_subscriptions_treated_as_individual() {
 
 #[tokio::test]
 async fn test_individual_tree_limit_is_two() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("individual", "active");
     const OWNER: &str = "limit-tree-user";
 
@@ -1506,7 +1573,7 @@ async fn test_individual_tree_limit_is_two() {
 
 #[tokio::test]
 async fn test_professional_tree_limit_is_unlimited() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("professional", "active");
     const OWNER: &str = "pro-tree-user";
 
@@ -1527,7 +1594,7 @@ async fn test_professional_tree_limit_is_unlimited() {
 
 #[tokio::test]
 async fn test_family_tree_limit_is_ten() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("family", "active");
     const OWNER: &str = "family-tree-limit-user";
 
@@ -1562,7 +1629,7 @@ async fn test_family_tree_limit_is_ten() {
 
 #[tokio::test]
 async fn test_individual_member_limit_is_100() {
-    let (app, db) = setup_with_auth().await;
+    let (app, db, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("individual", "active");
     const CREATOR: &str = "limit-person-user";
 
@@ -1594,7 +1661,7 @@ async fn test_individual_member_limit_is_100() {
 
 #[tokio::test]
 async fn test_individual_member_limit_at_99_allows_one_more() {
-    let (app, db) = setup_with_auth().await;
+    let (app, db, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("individual", "active");
     const CREATOR: &str = "limit-person-user-99";
 
@@ -1624,7 +1691,7 @@ async fn test_individual_member_limit_at_99_allows_one_more() {
 
 #[tokio::test]
 async fn test_professional_member_limit_is_unlimited() {
-    let (app, db) = setup_with_auth().await;
+    let (app, db, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("professional", "active");
     const CREATOR: &str = "pro-person-user";
 
@@ -1655,7 +1722,7 @@ async fn test_professional_member_limit_is_unlimited() {
 #[tokio::test]
 async fn test_inactive_subscription_treated_as_individual() {
     // A canceled/inactive subscription should default to individual tier limits
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     // "professional" tier but "canceled" status → should behave as individual
     let token = make_clann_jwt("professional", "canceled");
     const OWNER: &str = "canceled-sub-user";
@@ -1685,7 +1752,7 @@ async fn test_inactive_subscription_treated_as_individual() {
 
 #[tokio::test]
 async fn test_get_endpoints_accessible_with_valid_jwt() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("individual", "active");
 
     // GET /api/persons should be accessible (read operations need auth too)
@@ -1698,7 +1765,7 @@ async fn test_get_endpoints_accessible_with_valid_jwt() {
 
 #[tokio::test]
 async fn test_get_endpoints_blocked_without_jwt() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let resp = app.oneshot(get("/api/persons")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
@@ -2228,7 +2295,7 @@ fn delete_auth(uri: &str, token: &str) -> Request<Body> {
 
 #[tokio::test]
 async fn test_get_ai_settings_not_found_when_empty() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("individual", "active");
     let response = app
         .oneshot(get_auth("/api/ai-settings", &token))
@@ -2239,7 +2306,7 @@ async fn test_get_ai_settings_not_found_when_empty() {
 
 #[tokio::test]
 async fn test_upsert_ai_settings_creates_new() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("individual", "active");
 
     let response = app
@@ -2266,7 +2333,7 @@ async fn test_upsert_ai_settings_creates_new() {
 
 #[tokio::test]
 async fn test_upsert_ai_settings_is_idempotent() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("individual", "active");
 
     // First PUT
@@ -2296,7 +2363,7 @@ async fn test_upsert_ai_settings_is_idempotent() {
 
 #[tokio::test]
 async fn test_delete_ai_settings_returns_204() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("individual", "active");
 
     // Create settings first
@@ -2326,7 +2393,7 @@ async fn test_delete_ai_settings_returns_204() {
 
 #[tokio::test]
 async fn test_delete_ai_settings_when_none_is_noop() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("individual", "active");
 
     // Delete with nothing stored — should still return 204

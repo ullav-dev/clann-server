@@ -9,9 +9,12 @@ pub struct Config {
     /// Path to the SurrealDB data file (used when starting SurrealDB with file-backed storage).
     pub db_path: String,
     pub enable_docs: bool,
-    /// When set, all API requests must include a valid `Authorization: Bearer <jwt>`.
-    /// Omit in development/test environments to skip auth enforcement.
-    pub jwt_secret: Option<String>,
+    /// JWKS URI on UUM — used by the RS256 token validator.
+    pub oauth2_jwks_url: String,
+    /// OAuth2 issuer URL (UUM) — validated in RS256 tokens.
+    pub oauth2_issuer: String,
+    /// RFC 9728 canonical URI for this MCP resource server — used as the OAuth2 audience.
+    pub mcp_canonical_uri: String,
 }
 
 impl Config {
@@ -33,7 +36,12 @@ impl Config {
                 .unwrap_or_else(|_| "true".into())
                 .parse()
                 .unwrap_or(true),
-            jwt_secret: std::env::var("JWT_SECRET").ok(),
+            oauth2_jwks_url: std::env::var("OAUTH2_JWKS_URL")
+                .unwrap_or_else(|_| "http://localhost:8081/oauth2/jwks".into()),
+            oauth2_issuer: std::env::var("OAUTH2_ISSUER")
+                .unwrap_or_else(|_| "http://localhost:8081".into()),
+            mcp_canonical_uri: std::env::var("CLANN_MCP_CANONICAL_URI")
+                .unwrap_or_else(|_| "http://localhost:3000".into()),
         }
     }
 }

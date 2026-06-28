@@ -15,8 +15,12 @@ tower-http = { version = "0.6", features = ["trace", "cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 utoipa = { version = "5", features = ["axum_extras"] }
-jsonwebtoken = "9"
+ullav-mcp-auth = { path = "../ullav-mcp-auth", default-features = false }
+rmcp = { version = "1.7.0", features = ["server", "transport-streamable-http-server", "transport-streamable-http-server-session", "macros"] }
+schemars = "1.0"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+wiremock = "0.6"

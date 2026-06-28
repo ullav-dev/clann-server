@@ -1,8 +1,10 @@
 use axum::{
-    extract::DefaultBodyLimit,
-    middleware,
+    extract::{DefaultBodyLimit, Request},
+    http::{header, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
-    Extension, Router,
+    Extension, Json, Router,
 };
 
 use crate::{
@@ -34,7 +36,70 @@ use crate::{
     openapi::{openapi_json, swagger_ui},
 };
 
-pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: Option<String>) -> Router {
+/// Configuration for the MCP endpoint and RFC 9728 protected resource metadata.
+pub struct McpConfig {
+    /// Canonical URI of this resource server — used as the OAuth2 audience.
+    pub canonical_uri: String,
+    /// UUM issuer URL — the authorization server for this resource.
+    pub authorization_server: String,
+    /// JWKS URI — included in the protected resource metadata response.
+    pub jwks_url: String,
+}
+
+/// Axum middleware that validates the MCP bearer token (RS256, audience-bound).
+///
+/// Returns a `WWW-Authenticate` header on 401 so MCP clients (Claude Code,
+/// Claude Desktop) can auto-discover the Authorization Server via RFC 9728.
+async fn mcp_auth_middleware(
+    req: Request,
+    next: Next,
+    validator: ullav_mcp_auth::TokenValidator,
+    canonical_uri: String,
+) -> Response {
+    let resource_metadata_url =
+        format!("{canonical_uri}/.well-known/oauth-protected-resource");
+    let www_auth_base = format!(
+        r#"Bearer resource_metadata="{resource_metadata_url}", scope="mcp:tools""#
+    );
+
+    let token = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|s| s.to_string());
+
+    match token {
+        None => (
+            StatusCode::UNAUTHORIZED,
+            [(axum::http::header::WWW_AUTHENTICATE, www_auth_base)],
+            Json(serde_json::json!({ "error": "unauthorized" })),
+        )
+            .into_response(),
+        Some(t) => match validator.validate_as::<serde_json::Value>(&t).await {
+            Err(_) => (
+                StatusCode::UNAUTHORIZED,
+                [(
+                    axum::http::header::WWW_AUTHENTICATE,
+                    format!(
+                        r#"Bearer resource_metadata="{resource_metadata_url}", scope="mcp:tools", error="invalid_token""#
+                    ),
+                )],
+                Json(serde_json::json!({ "error": "invalid_token" })),
+            )
+                .into_response(),
+            Ok(_) => next.run(req).await,
+        },
+    }
+}
+
+pub fn build_router(
+    db: Db,
+    upload_dir: String,
+    enable_docs: bool,
+    validator: Option<ullav_mcp_auth::TokenValidator>,
+    mcp: Option<McpConfig>,
+) -> Router {
     let mut router = Router::new();
 
     if enable_docs {
@@ -43,10 +108,9 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
             .route("/swagger-ui", get(swagger_ui));
     }
 
-    let secret = jwt_secret;
     let auth_layer = middleware::from_fn(move |req, next| {
-        let secret = secret.clone();
-        async move { jwt_middleware(req, next, secret).await }
+        let v = validator.clone();
+        async move { jwt_middleware(req, next, v).await }
     });
 
     // Image GET routes are public — browsers fetch <img src> without Authorization headers.
@@ -141,9 +205,45 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
         .route("/api/chat/sessions/{id}/messages", get(list_session_messages).post(append_message))
         .layer(auth_layer);
 
-    router
+    let mut router = router
         .merge(public_routes)
         .merge(protected_routes)
-        .layer(Extension(upload_dir))
-        .with_state(db)
+        .layer(Extension(upload_dir));
+
+    if let Some(mcp_cfg) = mcp {
+        let mcp_validator = ullav_mcp_auth::TokenValidator::new(
+            mcp_cfg.jwks_url.clone(),
+            mcp_cfg.authorization_server.clone(),
+            mcp_cfg.canonical_uri.clone(),
+        );
+
+        let canonical_uri = mcp_cfg.canonical_uri.clone();
+        let auth_server = mcp_cfg.authorization_server.clone();
+        let jwks_url = mcp_cfg.jwks_url.clone();
+
+        let pr_router = Router::new().route(
+            "/.well-known/oauth-protected-resource",
+            get(move || async move {
+                axum::Json(serde_json::json!({
+                    "resource": canonical_uri,
+                    "authorization_servers": [auth_server],
+                    "bearer_methods_supported": ["header"],
+                    "jwks_uri": jwks_url,
+                }))
+            }),
+        );
+
+        let canonical_uri_for_mw = mcp_cfg.canonical_uri.clone();
+        let mcp_router = Router::new()
+            .route_service("/mcp", crate::mcp::server::make_mcp_service(db.clone()))
+            .layer(middleware::from_fn(move |req, next| {
+                let v = mcp_validator.clone();
+                let u = canonical_uri_for_mw.clone();
+                async move { mcp_auth_middleware(req, next, v, u).await }
+            }));
+
+        router = router.merge(pr_router).merge(mcp_router);
+    }
+
+    router.with_state(db)
 }
