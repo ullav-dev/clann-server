@@ -3,12 +3,14 @@ FROM rust:1.93-slim AS builder
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y pkg-config libssl-dev git && rm -rf /var/lib/apt/lists/*
 
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY migrations ./migrations
-RUN cargo build --release
+RUN --mount=type=secret,id=git_auth_token \
+    git config --global url."https://x-access-token:$(cat /run/secrets/git_auth_token)@github.com/".insteadOf "https://github.com/" && \
+    cargo build --release
 
 # Runtime stage
 FROM debian:trixie-slim
