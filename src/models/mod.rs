@@ -1,6 +1,8 @@
 pub mod chat_session;
+pub mod contact_request;
 pub mod family_tree;
 pub mod life_event;
+pub mod merge_proposal;
 pub mod person;
 pub mod relationship;
 pub mod research_folder;

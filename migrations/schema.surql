@@ -195,3 +195,18 @@ DEFINE FIELD IF NOT EXISTS role       ON TABLE chat_message TYPE string ASSERT $
 DEFINE FIELD IF NOT EXISTS content    ON TABLE chat_message TYPE string;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE chat_message TYPE string DEFAULT <string>time::now();
 DEFINE INDEX IF NOT EXISTS idx_message_session ON TABLE chat_message COLUMNS session_id;
+
+-- ---------------------------------------------------------------------------
+-- Merge contact requests: cross-user communication before a merge is attempted
+-- ---------------------------------------------------------------------------
+DEFINE TABLE IF NOT EXISTS merge_contact_request SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS from_proxy_id   ON TABLE merge_contact_request TYPE record<person_proxy>;
+DEFINE FIELD IF NOT EXISTS from_user       ON TABLE merge_contact_request TYPE string;
+DEFINE FIELD IF NOT EXISTS to_user         ON TABLE merge_contact_request TYPE string;
+DEFINE FIELD IF NOT EXISTS initial_message ON TABLE merge_contact_request TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS status          ON TABLE merge_contact_request TYPE string DEFAULT 'pending' ASSERT $value IN ['pending', 'accepted', 'ignored'];
+DEFINE FIELD IF NOT EXISTS messages        ON TABLE merge_contact_request TYPE option<array<any>>;
+DEFINE FIELD IF NOT EXISTS created_at      ON TABLE merge_contact_request TYPE string VALUE <string>time::now() READONLY;
+DEFINE FIELD IF NOT EXISTS updated_at      ON TABLE merge_contact_request TYPE string VALUE <string>time::now();
+DEFINE INDEX IF NOT EXISTS mcr_to_user   ON TABLE merge_contact_request FIELDS to_user;
+DEFINE INDEX IF NOT EXISTS mcr_from_user ON TABLE merge_contact_request FIELDS from_user;

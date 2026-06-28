@@ -284,16 +284,19 @@ pub async fn delete_tree(
         .take(0)?;
     tree.ok_or(AppError::NotFound)?;
 
-    // Cascade: delete persons exclusively in this tree (with their relationship edges),
-    // then remove the tree from persons that also belong to other trees.
+    // Cascade: delete all proxies for this tree with their edges and life events,
+    // then auto-delete any canonical persons that have no remaining proxies.
     db.query(
-        "LET $pids = (SELECT VALUE id FROM person WHERE trees = [$name]);
-         DELETE has_father  WHERE in IN $pids OR out IN $pids;
-         DELETE has_mother  WHERE in IN $pids OR out IN $pids;
-         DELETE has_sibling WHERE in IN $pids OR out IN $pids;
-         DELETE has_spouse  WHERE in IN $pids OR out IN $pids;
-         DELETE person WHERE id IN $pids;
-         UPDATE person SET trees -= $name WHERE $name IN trees;
+        "LET $proxy_ids = (SELECT VALUE id FROM person_proxy WHERE tree = $name); \
+         LET $canonical_ids = (SELECT VALUE person_id FROM person_proxy WHERE tree = $name); \
+         DELETE has_father  WHERE in IN $proxy_ids OR out IN $proxy_ids; \
+         DELETE has_mother  WHERE in IN $proxy_ids OR out IN $proxy_ids; \
+         DELETE has_sibling WHERE in IN $proxy_ids OR out IN $proxy_ids; \
+         DELETE has_spouse  WHERE in IN $proxy_ids OR out IN $proxy_ids; \
+         DELETE life_event  WHERE person_proxy_id IN $proxy_ids; \
+         DELETE person_proxy WHERE id IN $proxy_ids; \
+         DELETE person WHERE id IN $canonical_ids \
+           AND (SELECT count() AS n FROM person_proxy WHERE person_id = person.id GROUP ALL)[0].n = 0; \
          DELETE family_tree WHERE name = $name;",
     )
     .bind(("name", name))

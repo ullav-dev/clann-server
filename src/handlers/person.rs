@@ -10,46 +10,34 @@ use crate::{
     auth::ClannAuth,
     db::{Db, DbConn},
     error::{AppError, ErrorResponse},
-    models::{family_tree::FamilyTree, person::{CreatePerson, Person, TreeMembershipRequest, UpdatePerson}},
+    models::{
+        family_tree::FamilyTree,
+        person::{
+            build_proxy_response, CreatePerson, Person, PersonProxy, PersonResponse,
+            PersonProxyResponse, PersonProxyStub, TreeMembershipRequest, UpdateCanonicalPerson,
+            UpdatePersonProxy,
+        },
+    },
 };
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct PersonFilter {
-    /// When present, only return/allow access to persons with this `created_by` value.
     pub created_by: Option<String>,
-    /// When present, only return persons belonging to this family tree.
     pub tree: Option<String>,
 }
 
-/// Returns true if `username` matches the configured admin username
-/// (`ADMIN_USERNAME` env var, defaulting to `"theboss"`).
 fn is_admin(username: &str) -> bool {
     let admin = std::env::var("ADMIN_USERNAME").unwrap_or_else(|_| "theboss".to_string());
     username == admin
 }
 
-/// Returns `AppError::NotFound` if `created_by` is set, is not the admin
-/// username, and does not match the person's `created_by` field.
-pub fn check_ownership(person: &Person, created_by: &Option<String>) -> Result<(), AppError> {
-    if let Some(ref creator) = created_by {
-        if !is_admin(creator) && person.created_by.as_deref() != Some(creator.as_str()) {
-            return Err(AppError::NotFound);
-        }
-    }
-    Ok(())
-}
-
-/// Returns `true` if `user_id` (JWT sub UUID) has an editor grant for any of
-/// the given trees.
+/// Returns `true` if `user_id` has an editor grant for the given tree.
 pub async fn is_tree_editor(db: &DbConn, user_id: &str, trees: &[String]) -> Result<bool, AppError> {
     if trees.is_empty() || user_id.is_empty() {
         return Ok(false);
     }
     let grant: Option<serde_json::Value> = db
-        .query(
-            "SELECT id FROM tree_editor \
-             WHERE user_id = $uid AND tree_name IN $trees LIMIT 1",
-        )
+        .query("SELECT id FROM tree_editor WHERE user_id = $uid AND tree_name IN $trees LIMIT 1")
         .bind(("uid", user_id.to_string()))
         .bind(("trees", trees.to_vec()))
         .await?
@@ -57,64 +45,165 @@ pub async fn is_tree_editor(db: &DbConn, user_id: &str, trees: &[String]) -> Res
     Ok(grant.is_some())
 }
 
-/// Confirms the authenticated caller may write to `person`.
-///
-/// Passes when:
-/// - dev mode (no JWT_SECRET, `auth.user_id` is empty), OR
-/// - the caller is the admin user, OR
-/// - the person was created by the caller (`created_by == auth.username`), OR
-/// - the caller is the team owner of any tree the person belongs to, OR
-/// - the caller has an explicit editor grant for any of those trees.
-///
-/// Returns `AppError::NotFound` on denial (same surface as read auth, so
-/// unauthenticated callers cannot distinguish missing from forbidden).
-pub async fn can_write_to_person(
-    person: &Person,
+/// Returns true if the caller is a member of `tree` (owner, team member, or editor).
+/// Always true in dev mode (empty user_id).
+pub async fn is_tree_member(tree: &str, auth: &ClannAuth, db: &DbConn) -> Result<bool, AppError> {
+    if auth.user_id.is_empty() {
+        return Ok(true);
+    }
+
+    let tree_rec: Option<FamilyTree> = db
+        .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
+        .bind(("name", tree.to_string()))
+        .await?
+        .take(0)?;
+
+    let Some(t) = tree_rec else { return Ok(false) };
+
+    if t.owner == auth.username {
+        return Ok(true);
+    }
+
+    if let Some(ref tid) = t.team_id {
+        if auth.teams.contains_key(tid.as_str()) {
+            return Ok(true);
+        }
+    }
+
+    if is_tree_editor(db, &auth.user_id, &[tree.to_string()]).await? {
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+/// Returns `Ok(())` when the caller may write to the given proxy.
+/// Same surface as read auth (NotFound) to prevent proxy enumeration.
+pub async fn can_write_to_proxy(
+    proxy: &PersonProxy,
     auth: &ClannAuth,
     db: &DbConn,
 ) -> Result<(), AppError> {
-    // Dev mode: no JWT enforcement.
     if auth.user_id.is_empty() {
         return Ok(());
     }
 
-    // Admin bypass.
     if !auth.username.is_empty() && is_admin(&auth.username) {
         return Ok(());
     }
 
-    // Creator can always write their own records.
+    if !auth.username.is_empty()
+        && proxy.created_by.as_deref() == Some(auth.username.as_str())
+    {
+        return Ok(());
+    }
+
+    let tree_rec: Option<FamilyTree> = db
+        .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
+        .bind(("name", proxy.tree.clone()))
+        .await?
+        .take(0)?;
+
+    if let Some(t) = tree_rec {
+        if let Some(ref tid) = t.team_id {
+            if auth.teams.get(tid.as_str()).map(|r| r == "owner").unwrap_or(false) {
+                return Ok(());
+            }
+        }
+    }
+
+    if is_tree_editor(db, &auth.user_id, &[proxy.tree.clone()]).await? {
+        return Ok(());
+    }
+
+    Err(AppError::NotFound)
+}
+
+/// Auth check for canonical-person-scoped write operations.
+/// Passes for admins, for the person's creator, and (like can_write_to_proxy) when auth is absent.
+pub async fn can_write_to_person(
+    person: &Person,
+    auth: &ClannAuth,
+    _db: &DbConn,
+) -> Result<(), AppError> {
+    if auth.user_id.is_empty() {
+        return Ok(());
+    }
+    if !auth.username.is_empty() && is_admin(&auth.username) {
+        return Ok(());
+    }
     if !auth.username.is_empty()
         && person.created_by.as_deref() == Some(auth.username.as_str())
     {
         return Ok(());
     }
+    Err(AppError::Forbidden("You do not have write access to this person".to_string()))
+}
 
-    // Check team-level and tree-editor access in one pass.
-    if !person.trees.is_empty() {
-        // Fetch team_id for each tree the person belongs to.
-        let trees_info: Vec<serde_json::Value> = db
-            .query("SELECT team_id FROM family_tree WHERE name IN $trees")
-            .bind(("trees", person.trees.clone()))
-            .await?
-            .take(0)?;
-
-        for t in &trees_info {
-            if let Some(tid) = t.get("team_id").and_then(|v| v.as_str()) {
-                // Team owner has full write access to all persons in their team trees.
-                if auth.teams.get(tid).map(|r| r == "owner").unwrap_or(false) {
-                    return Ok(());
-                }
-            }
-        }
-
-        // Per-tree editor grant.
-        if is_tree_editor(db, &auth.user_id, &person.trees).await? {
-            return Ok(());
+/// Validate that a filter's `created_by` matches the person's creator.
+/// Returns `Ok(())` if `created_by` is `None` (no filter) or matches.
+pub fn check_ownership(person: &Person, created_by: &Option<String>) -> Result<(), AppError> {
+    if let Some(ref filter_user) = created_by {
+        if person.created_by.as_deref() != Some(filter_user.as_str()) {
+            return Err(AppError::NotFound);
         }
     }
+    Ok(())
+}
 
-    Err(AppError::NotFound)
+/// Decide whether to return a full response or a privacy stub for a cross-tree proxy.
+/// Tree members always get the full response. Cross-tree callers get a stub when `is_private = true`.
+/// Non-members with no shared canonical get NotFound.
+pub async fn redact_if_private(
+    proxy: PersonProxy,
+    canonical: Person,
+    auth: &ClannAuth,
+    db: &DbConn,
+) -> Result<PersonResponse, AppError> {
+    let member = is_tree_member(&proxy.tree, auth, db).await?;
+
+    if member {
+        return Ok(PersonResponse::Full(build_proxy_response(proxy, canonical)));
+    }
+
+    if !proxy.is_private {
+        return Ok(PersonResponse::Full(build_proxy_response(proxy, canonical)));
+    }
+
+    // Private proxy — check for a shared canonical (caller has proxy in another tree for same person).
+    let shared_canonical: Option<serde_json::Value> = db
+        .query("SELECT count() AS n FROM person_proxy WHERE person_id = $pid GROUP ALL")
+        .bind(("pid", proxy.person_id.clone()))
+        .await?
+        .take(0)?;
+    let count = shared_canonical
+        .and_then(|v| v.get("n").and_then(|x| x.as_u64()))
+        .unwrap_or(0);
+
+    if count <= 1 {
+        // No shared canonical — caller has no business knowing this proxy exists.
+        return Err(AppError::NotFound);
+    }
+
+    Ok(PersonResponse::Stub(PersonProxyStub {
+        id: proxy.id,
+        person_id: proxy.person_id,
+        tree: proxy.tree,
+        sex: canonical.sex,
+        is_private: true,
+    }))
+}
+
+/// Fetch a proxy record + its canonical, or return NotFound.
+pub async fn fetch_proxy_and_canonical(
+    db: &DbConn,
+    proxy_ulid: &str,
+) -> Result<(PersonProxy, Person), AppError> {
+    let proxy: Option<PersonProxy> = db.select(("person_proxy", proxy_ulid)).await?;
+    let proxy = proxy.ok_or(AppError::NotFound)?;
+    let canonical: Option<Person> = db.select(proxy.person_id.clone()).await?;
+    let canonical = canonical.ok_or(AppError::NotFound)?;
+    Ok((proxy, canonical))
 }
 
 #[utoipa::path(
@@ -122,9 +211,9 @@ pub async fn can_write_to_person(
     path = "/api/persons",
     request_body = CreatePerson,
     responses(
-        (status = 201, description = "Person created", body = Person),
+        (status = 201, description = "Person created", body = PersonProxyResponse),
         (status = 400, description = "Bad request", body = ErrorResponse),
-        (status = 422, description = "Invalid request body", body = ErrorResponse),
+        (status = 403, description = "Member limit reached", body = ErrorResponse),
     ),
     tag = "persons"
 )]
@@ -132,231 +221,10 @@ pub async fn create_person(
     State(db): State<Db>,
     Extension(auth): Extension<ClannAuth>,
     Json(payload): Json<CreatePerson>,
-) -> Result<(StatusCode, Json<Person>), AppError> {
+) -> Result<(StatusCode, Json<PersonProxyResponse>), AppError> {
     let db = db.lock().await;
 
-    if payload.trees.is_empty() {
-        return Err(AppError::BadRequest("At least one tree must be specified".to_string()));
-    }
-
-    // Enforce subscription member limit (total members created by this user)
-    if let (Some(limit), Some(ref creator)) = (auth.member_limit(), &payload.created_by) {
-        let existing: Vec<Person> = db
-            .query("SELECT * FROM person WHERE created_by = $creator")
-            .bind(("creator", creator.clone()))
-            .await?
-            .take(0)?;
-        if existing.len() >= limit {
-            return Err(AppError::Forbidden(format!(
-                "Member limit of {limit} reached for your plan. Upgrade to add more people."
-            )));
-        }
-    }
-
-    // Validate all specified trees exist
-    for tree_name in &payload.trees {
-        let tree_exists: Option<FamilyTree> = db
-            .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
-            .bind(("name", tree_name.clone()))
-            .await?
-            .take(0)?;
-        if tree_exists.is_none() {
-            return Err(AppError::BadRequest(format!(
-                "Family tree '{}' not found",
-                tree_name
-            )));
-        }
-    }
-
-    let body = serde_json::to_value(&payload)
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let person: Option<Person> = db.create("person").content(body).await?;
-    let person = person.ok_or(AppError::BadRequest("Failed to create person".to_string()))?;
-    Ok((StatusCode::CREATED, Json(person)))
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/persons",
-    params(PersonFilter),
-    responses(
-        (status = 200, description = "List of persons, optionally filtered", body = Vec<Person>),
-    ),
-    tag = "persons"
-)]
-pub async fn list_persons(
-    State(db): State<Db>,
-    Extension(auth): Extension<ClannAuth>,
-    Query(filter): Query<PersonFilter>,
-) -> Result<Json<Vec<Person>>, AppError> {
-    let db = db.lock().await;
-    let creator_filter = filter.created_by.as_deref().filter(|c| !is_admin(c));
-
-    // When a specific tree is requested, check whether this is a team member
-    // accessing a tree they don't own. In JWT mode the team UUID is confirmed
-    // against auth.teams; in dev mode (auth.user_id empty, teams always empty)
-    // we fall back to the tree-owner field as the authority.
-    let effective_creator: Option<&str> = if let (Some(tree_name), Some(creator)) =
-        (filter.tree.as_deref(), creator_filter)
-    {
-        let tree: Option<FamilyTree> = db
-            .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
-            .bind(("name", tree_name.to_string()))
-            .await?
-            .take(0)?;
-
-        let bypass = match &tree {
-            None => false,
-            Some(t) => {
-                let is_team_linked = t.team_id.is_some();
-                let is_not_owner = t.owner != creator;
-                if !is_team_linked || !is_not_owner {
-                    false
-                } else if auth.user_id.is_empty() {
-                    // Dev mode: no JWT validation — trust tree-owner check
-                    true
-                } else {
-                    // JWT mode: require the team to appear in the caller's claims
-                    t.team_id.as_ref().map_or(false, |tid| auth.teams.contains_key(tid))
-                }
-            }
-        };
-
-        if bypass { None } else { Some(creator) }
-    } else {
-        creator_filter
-    };
-
-    let persons: Vec<Person> = match (effective_creator, filter.tree.as_deref()) {
-        (Some(creator), Some(tree)) => db
-            .query("SELECT * FROM person WHERE created_by = $creator AND $tree IN trees")
-            .bind(("creator", creator.to_string()))
-            .bind(("tree", tree.to_string()))
-            .await?
-            .take(0)?,
-        (Some(creator), None) => db
-            .query("SELECT * FROM person WHERE created_by = $creator")
-            .bind(("creator", creator.to_string()))
-            .await?
-            .take(0)?,
-        (None, Some(tree)) => db
-            .query("SELECT * FROM person WHERE $tree IN trees")
-            .bind(("tree", tree.to_string()))
-            .await?
-            .take(0)?,
-        (None, None) => db.select("person").await?,
-    };
-    Ok(Json(persons))
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/persons/{id}",
-    params(
-        ("id" = String, Path, description = "Person record ID (without the `person:` prefix)")
-    ),
-    responses(
-        (status = 200, description = "Person found", body = Person),
-        (status = 404, description = "Person not found", body = ErrorResponse),
-    ),
-    tag = "persons"
-)]
-pub async fn get_person(
-    State(db): State<Db>,
-    Path(id): Path<String>,
-    Query(filter): Query<PersonFilter>,
-) -> Result<Json<Person>, AppError> {
-    let db = db.lock().await;
-    let person: Option<Person> = db.select(("person", id.as_str())).await?;
-    let person = person.ok_or(AppError::NotFound)?;
-    check_ownership(&person, &filter.created_by)?;
-    Ok(Json(person))
-}
-
-#[utoipa::path(
-    put,
-    path = "/api/persons/{id}",
-    params(
-        ("id" = String, Path, description = "Person record ID (without the `person:` prefix)")
-    ),
-    request_body = UpdatePerson,
-    responses(
-        (status = 200, description = "Person updated", body = Person),
-        (status = 404, description = "Person not found", body = ErrorResponse),
-    ),
-    tag = "persons"
-)]
-pub async fn update_person(
-    State(db): State<Db>,
-    Extension(auth): Extension<ClannAuth>,
-    Path(id): Path<String>,
-    Query(filter): Query<PersonFilter>,
-    Json(payload): Json<UpdatePerson>,
-) -> Result<Json<Person>, AppError> {
-    let db = db.lock().await;
-    let check: Option<Person> = db.select(("person", id.as_str())).await?;
-    can_write_to_person(&check.ok_or(AppError::NotFound)?, &auth, &db).await?;
-    let body = serde_json::to_value(&payload)
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let person: Option<Person> = db.update(("person", id.as_str())).merge(body).await?;
-    let person = person.ok_or(AppError::NotFound)?;
-    Ok(Json(person))
-}
-
-#[utoipa::path(
-    delete,
-    path = "/api/persons/{id}",
-    params(
-        ("id" = String, Path, description = "Person record ID (without the `person:` prefix)")
-    ),
-    responses(
-        (status = 204, description = "Person deleted"),
-    ),
-    tag = "persons"
-)]
-pub async fn delete_person(
-    State(db): State<Db>,
-    Extension(auth): Extension<ClannAuth>,
-    Path(id): Path<String>,
-    Query(filter): Query<PersonFilter>,
-) -> Result<StatusCode, AppError> {
-    let db = db.lock().await;
-    let check: Option<Person> = db.select(("person", id.as_str())).await?;
-    let Some(person) = check else {
-        return Ok(StatusCode::NO_CONTENT);
-    };
-    can_write_to_person(&person, &auth, &db).await?;
-    let _: Option<Person> = db.delete(("person", id.as_str())).await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/persons/{id}/trees",
-    params(
-        ("id" = String, Path, description = "Person record ID (without the `person:` prefix)")
-    ),
-    request_body = TreeMembershipRequest,
-    responses(
-        (status = 204, description = "Person added to tree"),
-        (status = 400, description = "Tree not found", body = ErrorResponse),
-        (status = 404, description = "Person not found", body = ErrorResponse),
-    ),
-    tag = "persons"
-)]
-pub async fn add_person_to_tree(
-    State(db): State<Db>,
-    Extension(auth): Extension<ClannAuth>,
-    Path(id): Path<String>,
-    Query(filter): Query<PersonFilter>,
-    Json(payload): Json<TreeMembershipRequest>,
-) -> Result<StatusCode, AppError> {
-    let db = db.lock().await;
-
-    let person: Option<Person> = db.select(("person", id.as_str())).await?;
-    let person = person.ok_or(AppError::NotFound)?;
-    can_write_to_person(&person, &auth, &db).await?;
-
+    // Validate tree exists.
     let tree_exists: Option<FamilyTree> = db
         .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
         .bind(("name", payload.tree.clone()))
@@ -369,50 +237,805 @@ pub async fn add_person_to_tree(
         )));
     }
 
-    db.query("UPDATE $person SET trees = array::union(trees, [$tree])")
-        .bind(("person", RecordId::new("person", id.as_str())))
-        .bind(("tree", payload.tree))
+    // Enforce subscription member limit (counted on canonical persons, not proxies).
+    if let (Some(limit), Some(ref creator)) = (auth.member_limit(), &payload.created_by) {
+        let count_res: Option<serde_json::Value> = db
+            .query("SELECT count() AS n FROM person WHERE created_by = $creator GROUP ALL")
+            .bind(("creator", creator.clone()))
+            .await?
+            .take(0)?;
+        let count = count_res
+            .and_then(|v| v.get("n").and_then(|x| x.as_u64()))
+            .unwrap_or(0) as usize;
+        if count >= limit {
+            return Err(AppError::Forbidden(format!(
+                "Member limit of {limit} reached for your plan. Upgrade to add more people."
+            )));
+        }
+    }
+
+    // Step 1: Create canonical person record.
+    // Use query bindings rather than .content(json!) to avoid JSON null vs SurrealDB NONE mismatch.
+    let sex_str = match payload.sex {
+        crate::models::person::Sex::Male => "Male",
+        crate::models::person::Sex::Female => "Female",
+    };
+    let canonicals: Vec<Person> = db
+        .query(
+            "CREATE person SET \
+             family_name         = $fn, \
+             first_name          = $fi, \
+             middle_name         = $mn, \
+             sex                 = $sex, \
+             date_of_birth       = $dob, \
+             place_of_birth      = $pob, \
+             date_of_death       = $dod, \
+             place_of_death      = $pod, \
+             birth_cert_authority = $bca, \
+             birth_cert_number   = $bcn, \
+             created_by          = $creator",
+        )
+        .bind(("fn",      payload.family_name.clone()))
+        .bind(("fi",      payload.first_name.clone()))
+        .bind(("mn",      payload.middle_name.clone()))
+        .bind(("sex",     sex_str))
+        .bind(("dob",     payload.date_of_birth.clone()))
+        .bind(("pob",     payload.place_of_birth.clone()))
+        .bind(("dod",     payload.date_of_death.clone()))
+        .bind(("pod",     payload.place_of_death.clone()))
+        .bind(("bca",     payload.birth_cert_authority.clone()))
+        .bind(("bcn",     payload.birth_cert_number.clone()))
+        .bind(("creator", payload.created_by.clone()))
+        .await?
+        .take(0)?;
+    let canonical = canonicals.into_iter().next()
+        .ok_or_else(|| AppError::BadRequest("Failed to create person".to_string()))?;
+
+    // Step 2: Create proxy record linked to the canonical.
+    let proxy_res: Result<Vec<PersonProxy>, _> = db
+        .query(
+            "CREATE person_proxy SET \
+             person_id              = $pid, \
+             tree                   = $tree, \
+             preferred_family_name  = $pfn, \
+             preferred_first_name   = $pFirst, \
+             preferred_middle_name  = $pmn, \
+             nickname               = $nick, \
+             username               = $uname, \
+             email                  = $email, \
+             biography              = $bio, \
+             is_private             = $private, \
+             created_by             = $creator",
+        )
+        .bind(("pid",     canonical.id.clone()))
+        .bind(("tree",    payload.tree))
+        .bind(("pfn",     payload.preferred_family_name))
+        .bind(("pFirst",  payload.preferred_first_name))
+        .bind(("pmn",     payload.preferred_middle_name))
+        .bind(("nick",    payload.nickname))
+        .bind(("uname",   payload.username))
+        .bind(("email",   payload.email))
+        .bind(("bio",     payload.biography))
+        .bind(("private", payload.is_private.unwrap_or(false)))
+        .bind(("creator", payload.created_by))
+        .await?
+        .take(0);
+
+    match proxy_res {
+        Ok(mut proxies) if !proxies.is_empty() => {
+            let proxy = proxies.remove(0);
+            Ok((StatusCode::CREATED, Json(build_proxy_response(proxy, canonical))))
+        }
+        _ => {
+            // Rollback: delete the orphaned canonical.
+            let _: Option<Person> = db.delete(canonical.id).await.ok().flatten();
+            Err(AppError::BadRequest("Failed to create person proxy".to_string()))
+        }
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/persons",
+    params(PersonFilter),
+    responses(
+        (status = 200, description = "List of persons (full or stub based on privacy)", body = Vec<PersonProxyResponse>),
+    ),
+    tag = "persons"
+)]
+pub async fn list_persons(
+    State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
+    Query(filter): Query<PersonFilter>,
+) -> Result<Json<Vec<PersonResponse>>, AppError> {
+    let db = db.lock().await;
+
+    // Resolve effective creator filter (team members can bypass the creator scope).
+    let creator_filter = filter.created_by.as_deref().filter(|c| !is_admin(c));
+    let effective_creator: Option<&str> = if let (Some(tree_name), Some(creator)) =
+        (filter.tree.as_deref(), creator_filter)
+    {
+        let tree: Option<FamilyTree> = db
+            .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
+            .bind(("name", tree_name.to_string()))
+            .await?
+            .take(0)?;
+        let bypass = match &tree {
+            None => false,
+            Some(t) => {
+                let is_not_owner = t.owner != creator;
+                if !is_not_owner { false }
+                else if auth.user_id.is_empty() { true }
+                else { t.team_id.as_ref().map_or(false, |tid| auth.teams.contains_key(tid)) }
+            }
+        };
+        if bypass { None } else { Some(creator) }
+    } else {
+        creator_filter
+    };
+
+    // Fetch proxies.
+    let proxies: Vec<PersonProxy> = match (effective_creator, filter.tree.as_deref()) {
+        (Some(creator), Some(tree)) => db
+            .query("SELECT * FROM person_proxy WHERE tree = $tree AND created_by = $creator")
+            .bind(("tree", tree.to_string()))
+            .bind(("creator", creator.to_string()))
+            .await?
+            .take(0)?,
+        (Some(creator), None) => db
+            .query("SELECT * FROM person_proxy WHERE created_by = $creator")
+            .bind(("creator", creator.to_string()))
+            .await?
+            .take(0)?,
+        (None, Some(tree)) => db
+            .query("SELECT * FROM person_proxy WHERE tree = $tree")
+            .bind(("tree", tree.to_string()))
+            .await?
+            .take(0)?,
+        (None, None) => db.select("person_proxy").await?,
+    };
+
+    if proxies.is_empty() {
+        return Ok(Json(vec![]));
+    }
+
+    // Batch-fetch all canonical persons to avoid N+1.
+    let person_ids: Vec<RecordId> = proxies.iter().map(|p| p.person_id.clone()).collect();
+    let canonicals: Vec<Person> = db
+        .query("SELECT * FROM person WHERE id IN $ids")
+        .bind(("ids", person_ids))
+        .await?
+        .take(0)?;
+
+    // Build a lookup map: person ULID → Person.
+    use surrealdb::types::RecordIdKey;
+    let canonical_map: std::collections::HashMap<String, Person> = canonicals
+        .into_iter()
+        .map(|c| {
+            let key = match &c.id.key {
+                RecordIdKey::String(k) => k.clone(),
+                other => format!("{other:?}"),
+            };
+            (key, c)
+        })
+        .collect();
+
+    let is_member_of_tree = match filter.tree.as_deref() {
+        Some(t) => {
+            // Cache a single membership check for the requested tree.
+            if auth.user_id.is_empty() {
+                true
+            } else {
+                let tree: Option<FamilyTree> = db
+                    .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
+                    .bind(("name", t.to_string()))
+                    .await?
+                    .take(0)?;
+                match tree {
+                    None => false,
+                    Some(ref tr) => {
+                        tr.owner == auth.username
+                            || tr.team_id.as_ref().map_or(false, |tid| auth.teams.contains_key(tid.as_str()))
+                            || is_tree_editor(&*db, &auth.user_id, &[t.to_string()]).await?
+                    }
+                }
+            }
+        }
+        None => auth.user_id.is_empty(),
+    };
+
+    let mut results = Vec::with_capacity(proxies.len());
+    for proxy in proxies {
+        let proxy_person_key = match &proxy.person_id.key {
+            RecordIdKey::String(k) => k.clone(),
+            other => format!("{other:?}"),
+        };
+        let Some(canonical) = canonical_map.get(&proxy_person_key) else { continue };
+
+        if proxy.is_private && !is_member_of_tree {
+            results.push(PersonResponse::Stub(PersonProxyStub {
+                id: proxy.id,
+                person_id: proxy.person_id,
+                tree: proxy.tree,
+                sex: canonical.sex.clone(),
+                is_private: true,
+            }));
+        } else {
+            results.push(PersonResponse::Full(build_proxy_response(proxy, canonical.clone())));
+        }
+    }
+
+    Ok(Json(results))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/persons/{id}",
+    params(
+        ("id" = String, Path, description = "Proxy ULID (without the `person_proxy:` prefix)")
+    ),
+    responses(
+        (status = 200, description = "Person found (full or stub)", body = PersonProxyResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
+    ),
+    tag = "persons"
+)]
+pub async fn get_person(
+    State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
+    Path(id): Path<String>,
+) -> Result<Json<PersonResponse>, AppError> {
+    let db = db.lock().await;
+    let (proxy, canonical) = fetch_proxy_and_canonical(&db, &id).await?;
+    let response = redact_if_private(proxy, canonical, &auth, &db).await?;
+    Ok(Json(response))
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/persons/{id}",
+    params(
+        ("id" = String, Path, description = "Proxy ULID (without the `person_proxy:` prefix)")
+    ),
+    request_body = UpdatePersonProxy,
+    responses(
+        (status = 200, description = "Proxy updated", body = PersonProxyResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
+    ),
+    tag = "persons"
+)]
+pub async fn update_person(
+    State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
+    Path(id): Path<String>,
+    Json(payload): Json<UpdatePersonProxy>,
+) -> Result<Json<PersonProxyResponse>, AppError> {
+    let db = db.lock().await;
+    let (proxy, canonical) = fetch_proxy_and_canonical(&db, &id).await?;
+    can_write_to_proxy(&proxy, &auth, &db).await?;
+
+    let body = serde_json::to_value(&payload)
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let updated: Option<PersonProxy> = db
+        .update(("person_proxy", id.as_str()))
+        .merge(body)
         .await?;
+    let updated = updated.ok_or(AppError::NotFound)?;
+    Ok(Json(build_proxy_response(updated, canonical)))
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/persons/{id}/canonical",
+    params(
+        ("id" = String, Path, description = "Proxy ULID — resolves to the canonical person")
+    ),
+    request_body = UpdateCanonicalPerson,
+    responses(
+        (status = 200, description = "Canonical updated", body = PersonProxyResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
+    ),
+    tag = "persons"
+)]
+pub async fn update_canonical(
+    State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
+    Path(id): Path<String>,
+    Json(payload): Json<UpdateCanonicalPerson>,
+) -> Result<Json<PersonProxyResponse>, AppError> {
+    let db = db.lock().await;
+    let (proxy, _) = fetch_proxy_and_canonical(&db, &id).await?;
+    can_write_to_proxy(&proxy, &auth, &db).await?;
+
+    // Build partial JSON — only include fields that were set.
+    let mut update = serde_json::Map::new();
+    if let Some(v) = payload.family_name { update.insert("family_name".into(), v.into()); }
+    if let Some(v) = payload.first_name { update.insert("first_name".into(), v.into()); }
+    if let Some(v) = payload.middle_name { update.insert("middle_name".into(), v.into()); }
+    if let Some(v) = payload.sex {
+        let s = match v { crate::models::person::Sex::Male => "Male", crate::models::person::Sex::Female => "Female" };
+        update.insert("sex".into(), s.into());
+    }
+    if let Some(v) = payload.date_of_birth { update.insert("date_of_birth".into(), v.into()); }
+    if let Some(v) = payload.place_of_birth { update.insert("place_of_birth".into(), v.into()); }
+    if let Some(v) = payload.date_of_death { update.insert("date_of_death".into(), v.into()); }
+    if let Some(v) = payload.place_of_death { update.insert("place_of_death".into(), v.into()); }
+    if let Some(v) = payload.birth_cert_authority { update.insert("birth_cert_authority".into(), v.into()); }
+    if let Some(v) = payload.birth_cert_number { update.insert("birth_cert_number".into(), v.into()); }
+
+    let canonical: Option<Person> = db
+        .update(proxy.person_id.clone())
+        .merge(serde_json::Value::Object(update))
+        .await?;
+    let canonical = canonical.ok_or(AppError::NotFound)?;
+    // Re-fetch proxy (unchanged) to build the response.
+    let proxy_fresh: Option<PersonProxy> = db.select(("person_proxy", id.as_str())).await?;
+    Ok(Json(build_proxy_response(proxy_fresh.ok_or(AppError::NotFound)?, canonical)))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/persons/{id}",
+    params(
+        ("id" = String, Path, description = "Proxy ULID (without the `person_proxy:` prefix)")
+    ),
+    responses(
+        (status = 204, description = "Person deleted"),
+    ),
+    tag = "persons"
+)]
+pub async fn delete_person(
+    State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    let db = db.lock().await;
+    let proxy: Option<PersonProxy> = db.select(("person_proxy", id.as_str())).await?;
+    let Some(proxy) = proxy else {
+        return Ok(StatusCode::NO_CONTENT);
+    };
+    can_write_to_proxy(&proxy, &auth, &db).await?;
+
+    let proxy_rid = RecordId::new("person_proxy", id.as_str());
+    let canonical_id = proxy.person_id.clone();
+
+    db.query(
+        "DELETE has_father  WHERE in = $pid OR out = $pid; \
+         DELETE has_mother  WHERE in = $pid OR out = $pid; \
+         DELETE has_sibling WHERE in = $pid OR out = $pid; \
+         DELETE has_spouse  WHERE in = $pid OR out = $pid; \
+         DELETE life_event  WHERE person_proxy_id = $pid; \
+         DELETE person_proxy WHERE id = $pid;",
+    )
+    .bind(("pid", proxy_rid))
+    .await?;
+
+    // Auto-delete canonical if no proxies remain.
+    let remaining: Option<serde_json::Value> = db
+        .query("SELECT count() AS n FROM person_proxy WHERE person_id = $cid GROUP ALL")
+        .bind(("cid", canonical_id.clone()))
+        .await?
+        .take(0)?;
+    let n = remaining.and_then(|v| v.get("n").and_then(|x| x.as_u64())).unwrap_or(0);
+    if n == 0 {
+        let _: Option<Person> = db.delete(canonical_id).await.ok().flatten();
+    }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/persons/{id}/trees",
+    params(
+        ("id" = String, Path, description = "Proxy ULID of an existing proxy for this person")
+    ),
+    request_body = TreeMembershipRequest,
+    responses(
+        (status = 201, description = "Person added to tree — returns the new proxy", body = PersonProxyResponse),
+        (status = 400, description = "Tree not found or already a member", body = ErrorResponse),
+        (status = 404, description = "Proxy not found", body = ErrorResponse),
+    ),
+    tag = "persons"
+)]
+pub async fn add_person_to_tree(
+    State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
+    Path(id): Path<String>,
+    Json(payload): Json<TreeMembershipRequest>,
+) -> Result<(StatusCode, Json<PersonProxyResponse>), AppError> {
+    let db = db.lock().await;
+
+    let (proxy, canonical) = fetch_proxy_and_canonical(&db, &id).await?;
+    can_write_to_proxy(&proxy, &auth, &db).await?;
+
+    let tree_exists: Option<FamilyTree> = db
+        .query("SELECT * FROM family_tree WHERE name = $name LIMIT 1")
+        .bind(("name", payload.tree.clone()))
+        .await?
+        .take(0)?;
+    if tree_exists.is_none() {
+        return Err(AppError::BadRequest(format!("Family tree '{}' not found", payload.tree)));
+    }
+
+    // unique_proxy_canonical_tree index will reject a duplicate.
+    let new_proxies: Vec<PersonProxy> = db
+        .query(
+            "CREATE person_proxy SET \
+             person_id  = $pid, \
+             tree       = $tree, \
+             created_by = $creator",
+        )
+        .bind(("pid",     canonical.id.clone()))
+        .bind(("tree",    payload.tree))
+        .bind(("creator", proxy.created_by))
+        .await?
+        .take(0)?;
+
+    let new_proxy = new_proxies
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::BadRequest("Failed to create proxy for tree".to_string()))?;
+
+    Ok((StatusCode::CREATED, Json(build_proxy_response(new_proxy, canonical))))
 }
 
 #[utoipa::path(
     delete,
     path = "/api/persons/{id}/trees/{tree_name}",
     params(
-        ("id" = String, Path, description = "Person record ID (without the `person:` prefix)"),
-        ("tree_name" = String, Path, description = "Tree name (slug) to remove"),
+        ("id" = String, Path, description = "Proxy ULID"),
+        ("tree_name" = String, Path, description = "Tree name slug to remove the proxy from"),
     ),
     responses(
         (status = 204, description = "Person removed from tree"),
-        (status = 400, description = "Cannot remove from last tree", body = ErrorResponse),
-        (status = 404, description = "Person not found", body = ErrorResponse),
+        (status = 400, description = "Cannot remove from last proxy", body = ErrorResponse),
+        (status = 404, description = "Proxy not found", body = ErrorResponse),
     ),
     tag = "persons"
 )]
 pub async fn remove_person_from_tree(
     State(db): State<Db>,
     Extension(auth): Extension<ClannAuth>,
-    Path((id, tree_name)): Path<(String, String)>,
-    Query(filter): Query<PersonFilter>,
+    Path((id, _tree_name)): Path<(String, String)>,
 ) -> Result<StatusCode, AppError> {
     let db = db.lock().await;
 
-    let person: Option<Person> = db.select(("person", id.as_str())).await?;
-    let person = person.ok_or(AppError::NotFound)?;
-    can_write_to_person(&person, &auth, &db).await?;
+    let proxy: Option<PersonProxy> = db.select(("person_proxy", id.as_str())).await?;
+    let proxy = proxy.ok_or(AppError::NotFound)?;
+    can_write_to_proxy(&proxy, &auth, &db).await?;
 
-    if person.trees.len() <= 1 {
+    // Require at least one remaining proxy after deletion.
+    let remaining: Option<serde_json::Value> = db
+        .query("SELECT count() AS n FROM person_proxy WHERE person_id = $cid GROUP ALL")
+        .bind(("cid", proxy.person_id.clone()))
+        .await?
+        .take(0)?;
+    let n = remaining.and_then(|v| v.get("n").and_then(|x| x.as_u64())).unwrap_or(0);
+    if n <= 1 {
         return Err(AppError::BadRequest(
-            "Cannot remove person from their last tree".to_string(),
+            "Cannot remove person from their last tree — use DELETE /api/persons/{id} instead".to_string(),
         ));
     }
 
-    db.query("UPDATE $person SET trees -= $tree")
-        .bind(("person", RecordId::new("person", id.as_str())))
-        .bind(("tree", tree_name))
-        .await?;
+    let proxy_rid = RecordId::new("person_proxy", id.as_str());
+    db.query(
+        "DELETE has_father  WHERE in = $pid OR out = $pid; \
+         DELETE has_mother  WHERE in = $pid OR out = $pid; \
+         DELETE has_sibling WHERE in = $pid OR out = $pid; \
+         DELETE has_spouse  WHERE in = $pid OR out = $pid; \
+         DELETE life_event  WHERE person_proxy_id = $pid; \
+         DELETE person_proxy WHERE id = $pid;",
+    )
+    .bind(("pid", proxy_rid))
+    .await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// List all proxy records (across trees) that share the same canonical person as this proxy.
+#[utoipa::path(
+    get,
+    path = "/api/persons/{id}/linked-proxies",
+    params(
+        ("id" = String, Path, description = "Proxy ULID")
+    ),
+    responses(
+        (status = 200, description = "Other proxies for the same canonical person", body = Vec<PersonProxyResponse>),
+        (status = 404, description = "Not found", body = ErrorResponse),
+    ),
+    tag = "persons"
+)]
+pub async fn list_proxy_links(
+    State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<PersonResponse>>, AppError> {
+    let db = db.lock().await;
+    let proxy: Option<PersonProxy> = db.select(("person_proxy", id.as_str())).await?;
+    let proxy = proxy.ok_or(AppError::NotFound)?;
+
+    let proxies: Vec<PersonProxy> = db
+        .query("SELECT * FROM person_proxy WHERE person_id = $cid AND id != $self")
+        .bind(("cid", proxy.person_id.clone()))
+        .bind(("self", proxy.id.clone()))
+        .await?
+        .take(0)?;
+
+    let canonical: Option<Person> = db.select(proxy.person_id).await?;
+    let canonical = canonical.ok_or(AppError::NotFound)?;
+
+    let mut results = Vec::with_capacity(proxies.len());
+    for p in proxies {
+        let tree = p.tree.clone();
+        let is_priv = p.is_private;
+        let resp = if is_priv {
+            let member = is_tree_member(&tree, &auth, &db).await?;
+            if member {
+                PersonResponse::Full(build_proxy_response(p, canonical.clone()))
+            } else {
+                PersonResponse::Stub(PersonProxyStub {
+                    id: p.id,
+                    person_id: p.person_id,
+                    tree: p.tree,
+                    sex: canonical.sex.clone(),
+                    is_private: true,
+                })
+            }
+        } else {
+            PersonResponse::Full(build_proxy_response(p, canonical.clone()))
+        };
+        results.push(resp);
+    }
+
+    Ok(Json(results))
+}
+
+/// Collapse two proxies in the same tree into one survivor, re-pointing their edges and life events.
+#[utoipa::path(
+    post,
+    path = "/api/persons/{id}/collapse-into/{survivor_id}",
+    params(
+        ("id" = String, Path, description = "Proxy ULID to collapse (loser)"),
+        ("survivor_id" = String, Path, description = "Proxy ULID to keep (survivor)"),
+    ),
+    responses(
+        (status = 204, description = "Collapsed"),
+        (status = 400, description = "Proxies are not in the same tree", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
+    ),
+    tag = "persons"
+)]
+pub async fn collapse_same_tree_duplicate(
+    State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
+    Path((id, survivor_id)): Path<(String, String)>,
+) -> Result<StatusCode, AppError> {
+    let db = db.lock().await;
+
+    let loser: Option<PersonProxy> = db.select(("person_proxy", id.as_str())).await?;
+    let loser = loser.ok_or(AppError::NotFound)?;
+    let survivor: Option<PersonProxy> = db.select(("person_proxy", survivor_id.as_str())).await?;
+    let survivor = survivor.ok_or(AppError::NotFound)?;
+
+    if loser.tree != survivor.tree {
+        return Err(AppError::BadRequest(
+            "Both proxies must be in the same tree to collapse".to_string(),
+        ));
+    }
+
+    can_write_to_proxy(&loser, &auth, &db).await?;
+
+    let loser_rid   = RecordId::new("person_proxy", id.as_str());
+    let survivor_rid = RecordId::new("person_proxy", survivor_id.as_str());
+    let loser_canonical = loser.person_id.clone();
+
+    // Redirect edges that point to/from the loser proxy to the survivor, delete duplicates.
+    db.query(
+        "UPDATE has_father  SET in  = $s WHERE in  = $l AND NOT (SELECT id FROM has_father  WHERE in  = $s AND out = out LIMIT 1); \
+         DELETE has_father  WHERE in  = $l; \
+         UPDATE has_father  SET out = $s WHERE out = $l AND NOT (SELECT id FROM has_father  WHERE out = $s AND in  = in  LIMIT 1); \
+         DELETE has_father  WHERE out = $l; \
+         UPDATE has_mother  SET in  = $s WHERE in  = $l AND NOT (SELECT id FROM has_mother  WHERE in  = $s AND out = out LIMIT 1); \
+         DELETE has_mother  WHERE in  = $l; \
+         UPDATE has_mother  SET out = $s WHERE out = $l AND NOT (SELECT id FROM has_mother  WHERE out = $s AND in  = in  LIMIT 1); \
+         DELETE has_mother  WHERE out = $l; \
+         UPDATE has_sibling SET in  = $s WHERE in  = $l AND NOT (SELECT id FROM has_sibling WHERE in  = $s AND out = out LIMIT 1); \
+         DELETE has_sibling WHERE in  = $l; \
+         UPDATE has_sibling SET out = $s WHERE out = $l AND NOT (SELECT id FROM has_sibling WHERE out = $s AND in  = in  LIMIT 1); \
+         DELETE has_sibling WHERE out = $l; \
+         UPDATE has_spouse  SET in  = $s WHERE in  = $l AND NOT (SELECT id FROM has_spouse  WHERE in  = $s AND out = out LIMIT 1); \
+         DELETE has_spouse  WHERE in  = $l; \
+         UPDATE has_spouse  SET out = $s WHERE out = $l AND NOT (SELECT id FROM has_spouse  WHERE out = $s AND in  = in  LIMIT 1); \
+         DELETE has_spouse  WHERE out = $l; \
+         UPDATE life_event SET person_proxy_id = $s WHERE person_proxy_id = $l; \
+         DELETE person_proxy WHERE id = $l;",
+    )
+    .bind(("l", loser_rid))
+    .bind(("s", survivor_rid))
+    .await?;
+
+    // Auto-delete the loser's canonical if it has no remaining proxies (not survivor's canonical).
+    if loser.person_id != survivor.person_id {
+        let rem: Option<serde_json::Value> = db
+            .query("SELECT count() AS n FROM person_proxy WHERE person_id = $cid GROUP ALL")
+            .bind(("cid", loser_canonical.clone()))
+            .await?
+            .take(0)?;
+        let n = rem.and_then(|v| v.get("n").and_then(|x| x.as_u64())).unwrap_or(0);
+        if n == 0 {
+            let _: Option<Person> = db.delete(loser_canonical).await.ok().flatten();
+        }
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/persons/{id}/find-duplicates",
+    params(
+        ("id" = String, Path, description = "Proxy ULID (without the `person_proxy:` prefix)")
+    ),
+    responses(
+        (status = 200, description = "Duplicate search result", body = crate::models::contact_request::DuplicateSearchResult),
+        (status = 404, description = "Not found", body = ErrorResponse),
+    ),
+    tag = "persons"
+)]
+pub async fn find_duplicates(
+    State(db): State<Db>,
+    Extension(auth): Extension<ClannAuth>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::models::contact_request::DuplicateSearchResult>, AppError> {
+    use crate::models::contact_request::{DuplicateMatch, DuplicateSearchResult};
+
+    let db = db.lock().await;
+    let (proxy, canonical) = fetch_proxy_and_canonical(&db, &id).await?;
+
+    let requester = if auth.username.is_empty() {
+        proxy.created_by.clone().unwrap_or_default()
+    } else {
+        auth.username.clone()
+    };
+
+    // Fetch all proxies with the same name pointing to a different canonical.
+    // No owner filter — same-user cross-tree duplicates are valid (e.g. after GEDCOM imports).
+    let mut res = db
+        .query(
+            "SELECT meta::id(id) AS proxy_key, \
+                    meta::id(person_id) AS canonical_key, \
+                    tree, created_by, \
+                    person_id.sex AS sex, \
+                    person_id.date_of_birth AS dob, \
+                    person_id.place_of_birth AS pob \
+             FROM person_proxy \
+             WHERE string::lowercase(person_id.family_name) = string::lowercase($family_name) \
+               AND string::lowercase(person_id.first_name) = string::lowercase($first_name) \
+               AND person_id != $canonical_id \
+               AND id != $self_id",
+        )
+        .bind(("family_name", canonical.family_name.clone()))
+        .bind(("first_name", canonical.first_name.clone()))
+        .bind(("canonical_id", canonical.id.clone()))
+        .bind(("self_id", proxy.id.clone()))
+        .await?;
+
+    let rows: Vec<serde_json::Value> = res.take(0)?;
+
+    let my_sex = match &canonical.sex {
+        crate::models::person::Sex::Male => "Male",
+        crate::models::person::Sex::Female => "Female",
+    };
+    let my_dob = canonical.date_of_birth.as_deref();
+    let my_pob = canonical.place_of_birth.as_deref();
+
+    let mut matches: Vec<DuplicateMatch> = rows
+        .into_iter()
+        .filter_map(|row| {
+            let proxy_key = row.get("proxy_key").and_then(|v| v.as_str())?.to_string();
+            let canonical_key = row.get("canonical_key").and_then(|v| v.as_str())?.to_string();
+            let tree = row.get("tree").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let owner = row.get("created_by").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let sex = row.get("sex").and_then(|v| v.as_str()).map(str::to_string);
+            let dob = row.get("dob").and_then(|v| v.as_str()).map(str::to_string);
+            let pob = row.get("pob").and_then(|v| v.as_str()).map(str::to_string);
+
+            // Sex: hard disqualifier when both are set and they differ.
+            let mut score: i32 = 0;
+            if let Some(cand_sex) = sex.as_deref() {
+                if cand_sex == my_sex {
+                    score += 3;
+                } else {
+                    return None; // sex mismatch — not the same person
+                }
+            }
+
+            // Date of birth: year-level fuzzy match.
+            if let (Some(my_y), Some(cand_dob)) = (my_dob.and_then(extract_year), dob.as_deref()) {
+                if let Some(cand_y) = extract_year(cand_dob) {
+                    if my_y == cand_y {
+                        score += 2;
+                    } else if my_y.abs_diff(cand_y) == 1 {
+                        score += 1; // off-by-one transcription error
+                    }
+                }
+            }
+
+            // Place of birth: substring containment ("Dublin" ↔ "Dublin, Ireland").
+            if let (Some(my_p), Some(cand_pob)) = (my_pob, pob.as_deref()) {
+                let a = my_p.to_lowercase();
+                let b = cand_pob.to_lowercase();
+                if a == b {
+                    score += 3;
+                } else if a.contains(&*b) || b.contains(&*a) {
+                    score += 2;
+                } else if shares_significant_word(&a, &b) {
+                    score += 1;
+                }
+            }
+
+            let score = score as u32;
+            let confidence = match score {
+                s if s >= 4 => "strong",
+                s if s >= 2 => "likely",
+                _ => "possible",
+            }
+            .to_string();
+
+            Some(DuplicateMatch {
+                proxy_id: format!("person_proxy:{proxy_key}"),
+                canonical_id: format!("person:{canonical_key}"),
+                tree,
+                is_own: owner == requester,
+                owner,
+                family_name: canonical.family_name.clone(),
+                first_name: canonical.first_name.clone(),
+                sex,
+                date_of_birth: dob,
+                place_of_birth: pob,
+                score,
+                confidence,
+            })
+        })
+        .collect();
+
+    // Highest confidence first.
+    matches.sort_by(|a, b| b.score.cmp(&a.score));
+
+    let count = matches.len() as u64;
+    let owners: Vec<String> = {
+        let mut seen = std::collections::HashSet::new();
+        matches.iter().filter_map(|m| {
+            if seen.insert(m.owner.clone()) { Some(m.owner.clone()) } else { None }
+        }).collect()
+    };
+
+    Ok(Json(DuplicateSearchResult { count, owners, matches }))
+}
+
+/// Extract the first 4-digit year in the range 1700–2099 from a freeform date string.
+fn extract_year(s: &str) -> Option<u32> {
+    let bytes = s.as_bytes();
+    for i in 0..bytes.len().saturating_sub(3) {
+        if bytes[i..i + 4].iter().all(|b| b.is_ascii_digit()) {
+            if let Ok(y) = s[i..i + 4].parse::<u32>() {
+                if (1700..=2099).contains(&y) {
+                    return Some(y);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// True when two normalised place strings share at least one word longer than 3 chars.
+fn shares_significant_word(a: &str, b: &str) -> bool {
+    let words_b: std::collections::HashSet<&str> = b
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|w| w.len() > 3)
+        .collect();
+    a.split(|c: char| !c.is_alphabetic())
+        .filter(|w| w.len() > 3)
+        .any(|w| words_b.contains(w))
 }

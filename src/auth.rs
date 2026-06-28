@@ -5,10 +5,10 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use jsonwebtoken::{decode, DecodingKey, Validation};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
+use ullav_mcp_auth::TokenValidator;
 
 // ── JWT claims (mirrors ullav-user-management) ────────────────────────────────
 
@@ -43,8 +43,7 @@ struct RawClaims {
 
 /// Authenticated user context attached to every request by the JWT middleware.
 ///
-/// When `JWT_SECRET` is not set (tests / local dev), a default `ClannAuth`
-/// with `tier = "enterprise"` is inserted so all handlers work without auth.
+/// Authenticated user context attached to every request by the JWT middleware.
 #[derive(Debug, Clone)]
 pub struct ClannAuth {
     /// JWT `sub` — the user's UUID string.
@@ -119,28 +118,25 @@ impl ClannAuth {
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 
-/// Axum middleware that validates the `Authorization: Bearer` JWT when
-/// `JWT_SECRET` is set, and inserts a `ClannAuth` extension into every request.
+/// Axum middleware that validates the `Authorization: Bearer` RS256 JWT
+/// and inserts a `ClannAuth` extension into every request.
 ///
-/// If `jwt_secret` is `None` (dev / test mode), auth is skipped and an
+/// When `validator` is `None` (dev / test mode), auth is skipped and an
 /// enterprise-tier `ClannAuth` is injected so plan limits are never triggered.
 pub async fn jwt_middleware(
     mut request: Request,
     next: Next,
-    jwt_secret: Option<String>,
+    validator: Option<TokenValidator>,
 ) -> Response {
-    let auth = match jwt_secret {
-        None => {
-            // Dev/test mode — no auth enforcement, unlimited plan
-            ClannAuth {
-                user_id: String::new(),
-                username: String::new(),
-                tier: "enterprise".to_string(),
-                teams: HashMap::new(),
-                clann_roles: HashMap::new(),
-            }
-        }
-        Some(secret) => {
+    let auth = match validator {
+        None => ClannAuth {
+            user_id: String::new(),
+            username: String::new(),
+            tier: "enterprise".to_string(),
+            teams: HashMap::new(),
+            clann_roles: HashMap::new(),
+        },
+        Some(v) => {
             let token = request
                 .headers()
                 .get(header::AUTHORIZATION)
@@ -151,14 +147,9 @@ pub async fn jwt_middleware(
             match token {
                 None => return unauthorized("Missing Authorization header"),
                 Some(token) => {
-                    match decode::<RawClaims>(
-                        &token,
-                        &DecodingKey::from_secret(secret.as_bytes()),
-                        &Validation::default(),
-                    ) {
+                    match v.validate_as::<RawClaims>(&token).await {
                         Err(e) => return unauthorized(&format!("Invalid token: {e}")),
-                        Ok(data) => {
-                            let raw = data.claims;
+                        Ok(raw) => {
                             let clann_sub = raw.subscriptions.get("clann");
                             let tier = match clann_sub {
                                 None => "individual".to_string(),

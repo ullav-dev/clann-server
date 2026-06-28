@@ -1,18 +1,28 @@
 use axum::{
-    extract::DefaultBodyLimit,
-    middleware,
+    extract::{DefaultBodyLimit, Request},
+    http::{header, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
-    Extension, Router,
+    Extension, Json, Router,
 };
 
 use crate::{
     auth::jwt_middleware,
     db::Db,
     handlers::{
+        contact_request::{
+            accept_contact_request, append_contact_message, create_contact_requests,
+            get_pending_count, ignore_contact_request, list_contact_requests,
+        },
         family_tree::{create_tree, delete_tree, get_tree, list_trees, set_primary_tree, set_tree_team, update_tree},
         image::{get_image, get_life_image, get_tree_image, upload_image, upload_life_image, upload_tree_image},
-        life_event::{create_life_event, delete_life_event, get_life_event, list_life_events, update_life_event},
-        person::{add_person_to_tree, create_person, delete_person, get_person, list_persons, remove_person_from_tree, update_person},
+        life_event::{create_life_event, delete_life_event, get_life_event, list_life_events, promote_life_event, update_life_event},
+        merge::{
+            accept_merge_proposal, create_merge_proposal,
+            get_merge_proposal, list_merge_proposals, reject_merge_proposal,
+        },
+        person::{add_person_to_tree, collapse_same_tree_duplicate, create_person, delete_person, find_duplicates, get_person, list_persons, list_proxy_links, remove_person_from_tree, update_canonical, update_person},
         relationship::{
             add_relationship, delete_relationship, get_family_tree, get_relationships,
             update_relationship_pedigree, update_spouse_dates,
@@ -26,7 +36,70 @@ use crate::{
     openapi::{openapi_json, swagger_ui},
 };
 
-pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: Option<String>) -> Router {
+/// Configuration for the MCP endpoint and RFC 9728 protected resource metadata.
+pub struct McpConfig {
+    /// Canonical URI of this resource server — used as the OAuth2 audience.
+    pub canonical_uri: String,
+    /// UUM issuer URL — the authorization server for this resource.
+    pub authorization_server: String,
+    /// JWKS URI — included in the protected resource metadata response.
+    pub jwks_url: String,
+}
+
+/// Axum middleware that validates the MCP bearer token (RS256, audience-bound).
+///
+/// Returns a `WWW-Authenticate` header on 401 so MCP clients (Claude Code,
+/// Claude Desktop) can auto-discover the Authorization Server via RFC 9728.
+async fn mcp_auth_middleware(
+    req: Request,
+    next: Next,
+    validator: ullav_mcp_auth::TokenValidator,
+    canonical_uri: String,
+) -> Response {
+    let resource_metadata_url =
+        format!("{canonical_uri}/.well-known/oauth-protected-resource");
+    let www_auth_base = format!(
+        r#"Bearer resource_metadata="{resource_metadata_url}", scope="mcp:tools""#
+    );
+
+    let token = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|s| s.to_string());
+
+    match token {
+        None => (
+            StatusCode::UNAUTHORIZED,
+            [(axum::http::header::WWW_AUTHENTICATE, www_auth_base)],
+            Json(serde_json::json!({ "error": "unauthorized" })),
+        )
+            .into_response(),
+        Some(t) => match validator.validate_as::<serde_json::Value>(&t).await {
+            Err(_) => (
+                StatusCode::UNAUTHORIZED,
+                [(
+                    axum::http::header::WWW_AUTHENTICATE,
+                    format!(
+                        r#"Bearer resource_metadata="{resource_metadata_url}", scope="mcp:tools", error="invalid_token""#
+                    ),
+                )],
+                Json(serde_json::json!({ "error": "invalid_token" })),
+            )
+                .into_response(),
+            Ok(_) => next.run(req).await,
+        },
+    }
+}
+
+pub fn build_router(
+    db: Db,
+    upload_dir: String,
+    enable_docs: bool,
+    validator: Option<ullav_mcp_auth::TokenValidator>,
+    mcp: Option<McpConfig>,
+) -> Router {
     let mut router = Router::new();
 
     if enable_docs {
@@ -35,10 +108,9 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
             .route("/swagger-ui", get(swagger_ui));
     }
 
-    let secret = jwt_secret;
     let auth_layer = middleware::from_fn(move |req, next| {
-        let secret = secret.clone();
-        async move { jwt_middleware(req, next, secret).await }
+        let v = validator.clone();
+        async move { jwt_middleware(req, next, v).await }
     });
 
     // Image GET routes are public — browsers fetch <img src> without Authorization headers.
@@ -64,6 +136,10 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
             "/api/persons/{id}",
             get(get_person).put(update_person).delete(delete_person),
         )
+        .route("/api/persons/{id}/canonical", patch(update_canonical))
+        .route("/api/persons/{id}/linked-proxies", get(list_proxy_links))
+        .route("/api/persons/{id}/collapse-into/{survivor_id}", post(collapse_same_tree_duplicate))
+        .route("/api/persons/{id}/find-duplicates", get(find_duplicates))
         .route("/api/persons/{id}/trees", post(add_person_to_tree))
         .route("/api/persons/{id}/trees/{tree_name}", delete(remove_person_from_tree))
         // Image uploads (GET is in public_routes above).
@@ -95,6 +171,18 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
             "/api/life-events/{event_id}",
             get(get_life_event).put(update_life_event).delete(delete_life_event),
         )
+        .route("/api/life-events/{event_id}/promote", patch(promote_life_event))
+        // Contact requests (cross-user duplicate communication, precedes merge)
+        .route("/api/contact-requests", post(create_contact_requests).get(list_contact_requests))
+        .route("/api/contact-requests/pending-count", get(get_pending_count))
+        .route("/api/contact-requests/{id}/accept", patch(accept_contact_request))
+        .route("/api/contact-requests/{id}/ignore", patch(ignore_contact_request))
+        .route("/api/contact-requests/{id}/messages", post(append_contact_message))
+        // Merge proposals
+        .route("/api/merge-proposals", post(create_merge_proposal).get(list_merge_proposals))
+        .route("/api/merge-proposals/{id}", get(get_merge_proposal))
+        .route("/api/merge-proposals/{id}/accept", patch(accept_merge_proposal))
+        .route("/api/merge-proposals/{id}/reject", patch(reject_merge_proposal))
         // Research Notes
         .route("/api/notes", post(create_research_note).get(list_research_notes))
         .route(
@@ -117,9 +205,45 @@ pub fn build_router(db: Db, upload_dir: String, enable_docs: bool, jwt_secret: O
         .route("/api/chat/sessions/{id}/messages", get(list_session_messages).post(append_message))
         .layer(auth_layer);
 
-    router
+    let mut router = router
         .merge(public_routes)
         .merge(protected_routes)
-        .layer(Extension(upload_dir))
-        .with_state(db)
+        .layer(Extension(upload_dir));
+
+    if let Some(mcp_cfg) = mcp {
+        let mcp_validator = ullav_mcp_auth::TokenValidator::new(
+            mcp_cfg.jwks_url.clone(),
+            mcp_cfg.authorization_server.clone(),
+            mcp_cfg.canonical_uri.clone(),
+        );
+
+        let canonical_uri = mcp_cfg.canonical_uri.clone();
+        let auth_server = mcp_cfg.authorization_server.clone();
+        let jwks_url = mcp_cfg.jwks_url.clone();
+
+        let pr_router = Router::new().route(
+            "/.well-known/oauth-protected-resource",
+            get(move || async move {
+                axum::Json(serde_json::json!({
+                    "resource": canonical_uri,
+                    "authorization_servers": [auth_server],
+                    "bearer_methods_supported": ["header"],
+                    "jwks_uri": jwks_url,
+                }))
+            }),
+        );
+
+        let canonical_uri_for_mw = mcp_cfg.canonical_uri.clone();
+        let mcp_router = Router::new()
+            .route_service("/mcp", crate::mcp::server::make_mcp_service(db.clone()))
+            .layer(middleware::from_fn(move |req, next| {
+                let v = mcp_validator.clone();
+                let u = canonical_uri_for_mw.clone();
+                async move { mcp_auth_middleware(req, next, v, u).await }
+            }));
+
+        router = router.merge(pr_router).merge(mcp_router);
+    }
+
+    router.with_state(db)
 }

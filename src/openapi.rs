@@ -4,12 +4,20 @@ use utoipa::OpenApi;
 use crate::{
     error::ErrorResponse,
     models::{
+        contact_request::{
+            AppendContactMessage, CreateContactRequest, DuplicateSearchResult,
+            MergeContactRequest, UnreadContactCount,
+        },
         family_tree::{CreateFamilyTree, FamilyTree, SetTreeTeam, UpdateFamilyTree},
         life_event::{CreateLifeEvent, EventType, LifeEvent, UpdateLifeEvent},
-        person::{CreatePerson, Person, Sex, UpdatePerson},
+        merge_proposal::{AcceptMergeProposalRequest, CreateMergeProposalRequest, MergeProposal, MergeResolution},
+        person::{
+            CreatePerson, Person, PersonProxy, PersonProxyResponse, PersonProxyStub,
+            PersonResponse, Sex, TreeMembershipRequest, UpdateCanonicalPerson, UpdatePersonProxy,
+        },
         relationship::{
-            AddRelationshipRequest, RelationshipType, RelationshipsResponse, SiblingType,
-            UpdateRelationshipRequest,
+            AddRelationshipRequest, RelationshipType,
+            RelationshipsResponse, SiblingType, UpdateRelationshipRequest,
         },
     },
 };
@@ -18,8 +26,8 @@ use crate::{
 #[openapi(
     info(
         title = "clann-server API",
-        version = "0.1.0",
-        description = "REST API for ancestry and family tree data management, backed by SurrealDB."
+        version = "26.3.0",
+        description = "REST API for ancestry and family tree data management (person-proxy architecture), backed by SurrealDB."
     ),
     paths(
         crate::handlers::family_tree::create_tree,
@@ -33,9 +41,16 @@ use crate::{
         crate::handlers::person::list_persons,
         crate::handlers::person::get_person,
         crate::handlers::person::update_person,
+        crate::handlers::person::update_canonical,
         crate::handlers::person::delete_person,
+        crate::handlers::person::add_person_to_tree,
+        crate::handlers::person::remove_person_from_tree,
+        crate::handlers::person::list_proxy_links,
+        crate::handlers::person::collapse_same_tree_duplicate,
         crate::handlers::image::upload_image,
         crate::handlers::image::get_image,
+        crate::handlers::image::upload_life_image,
+        crate::handlers::image::get_life_image,
         crate::handlers::relationship::add_relationship,
         crate::handlers::relationship::get_relationships,
         crate::handlers::relationship::delete_relationship,
@@ -47,25 +62,46 @@ use crate::{
         crate::handlers::life_event::get_life_event,
         crate::handlers::life_event::update_life_event,
         crate::handlers::life_event::delete_life_event,
+        crate::handlers::life_event::promote_life_event,
+        crate::handlers::merge::create_merge_proposal,
+        crate::handlers::merge::list_merge_proposals,
+        crate::handlers::merge::get_merge_proposal,
+        crate::handlers::merge::accept_merge_proposal,
+        crate::handlers::merge::reject_merge_proposal,
+        crate::handlers::person::find_duplicates,
+        crate::handlers::contact_request::create_contact_requests,
+        crate::handlers::contact_request::list_contact_requests,
+        crate::handlers::contact_request::get_pending_count,
+        crate::handlers::contact_request::accept_contact_request,
+        crate::handlers::contact_request::ignore_contact_request,
+        crate::handlers::contact_request::append_contact_message,
     ),
     components(
         schemas(
             FamilyTree, CreateFamilyTree, UpdateFamilyTree, SetTreeTeam,
-            Person, CreatePerson, UpdatePerson, Sex,
+            Person, PersonProxy, PersonProxyResponse, PersonProxyStub, PersonResponse,
+            CreatePerson, UpdatePersonProxy, UpdateCanonicalPerson, TreeMembershipRequest, Sex,
             AddRelationshipRequest, RelationshipsResponse,
             SiblingType, RelationshipType,
             crate::models::relationship::SpouseInfo,
+            crate::models::relationship::ParentInfo,
+            crate::models::relationship::SiblingInfo,
             crate::models::relationship::UpdateSpouseDatesRequest,
             UpdateRelationshipRequest,
             LifeEvent, CreateLifeEvent, UpdateLifeEvent, EventType,
+            MergeProposal, CreateMergeProposalRequest, AcceptMergeProposalRequest, MergeResolution,
+            MergeContactRequest, CreateContactRequest, AppendContactMessage,
+            DuplicateSearchResult, UnreadContactCount,
             ErrorResponse,
         )
     ),
     tags(
         (name = "trees",         description = "Create, read and delete family trees"),
-        (name = "persons",       description = "Create, read, update and delete person records"),
+        (name = "persons",       description = "Create, read, update and delete person proxies and canonicals"),
         (name = "relationships", description = "Manage family relationships and traverse the family tree"),
-        (name = "life-events",   description = "Create, read, update and delete life events for persons"),
+        (name = "life-events",   description = "Create, read, update, delete, and promote life events"),
+        (name = "merge",            description = "Cross-tree canonical merge proposals"),
+        (name = "contact-requests", description = "Cross-user duplicate contact requests and conversation threads"),
     )
 )]
 pub struct ApiDoc;

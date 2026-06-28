@@ -25,3 +25,6 @@ uploads/
 .env.prod
 secrets/
 .DS_Store
+
+migration_preflight_*.json
+migration_result_*.json

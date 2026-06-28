@@ -33,10 +33,17 @@ pub struct LifeEvent {
     #[serde(serialize_with = "serialize_record_id")]
     pub id: RecordId,
 
-    /// The person this event belongs to; serialised as `"person:<ulid>"` in JSON.
-    #[schema(value_type = String, example = "person:01jd4a8xyz")]
+    /// The person_proxy this event belongs to.
+    #[schema(value_type = String, example = "person_proxy:01jd4a8xyz")]
     #[serde(serialize_with = "serialize_record_id")]
-    pub person_id: RecordId,
+    pub person_proxy_id: RecordId,
+
+    /// When true, this event is visible to all trees sharing the same canonical person.
+    #[serde(default)]
+    pub is_canonical: bool,
+
+    /// The tree that created or promoted this event.
+    pub contributed_by_tree: Option<String>,
 
     pub name: String,
     pub date: Option<String>,
@@ -67,6 +74,9 @@ pub struct CreateLifeEvent {
     pub source_image: Option<String>,
     pub source_doc: Option<String>,
     pub created_by: Option<String>,
+    /// Set to true at creation time to immediately promote to canonical visibility.
+    #[serde(default)]
+    pub is_canonical: bool,
 }
 
 /// All fields optional; only supplied fields are updated (MERGE semantics).

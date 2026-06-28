@@ -4,58 +4,117 @@ use axum::{
 };
 use clann_server::{db::Db, routes::build_router};
 use http_body_util::BodyExt;
-use jsonwebtoken::{encode, EncodingKey, Header};
+use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::{atomic::{AtomicU64, Ordering}, Arc};
 use surrealdb::{engine::any, opt::auth::Root};
 use tokio::sync::Mutex;
 use tower::ServiceExt;
+use ullav_mcp_auth::TokenValidator;
+use wiremock::{matchers::{method, path}, Mock, MockServer, ResponseTemplate};
 
 static DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const TEST_TREE: &str = "test-tree";
-const TEST_JWT_SECRET: &str = "test-secret";
+const TEST_ISSUER: &str = "http://localhost:8081";
+const TEST_KID: &str = "87876bda381be12e";
+const TEST_KEY_N: &str = "ppZXUbBOwuRxQT63A0Fqoa_4_miOQq7WLyGo9o8T8tbRY_zBUEsChyEi3MgC6PZmPte_7_lq5FzWKGs9geylNdNS7MvljElZees6jxbjbyjlmMRZr2W6r3mxliPs3UNZNpSsvScpDhiAPX0Dm-fgrusO0iWTUodRYayZ8Tg3nI3ELw_3Aq6bNvmpED8vE0e-qE8AwNLcp1fuMCf2pagORPTgJw17IAQeWFtgNrshqyLpvDk4s5W6Fliv_EjvtflUSD07hpA25Zd5aOjM2hlx4mXQLI5gknAb9AxMiJxSQvv4TiegHNjfE2eHork2EvwRA-groPXQvMCw1-otFmFlaw";
+const TEST_KEY_E: &str = "AQAB";
+const TEST_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCmlldRsE7C5HFB
+PrcDQWqhr/j+aI5CrtYvIaj2jxPy1tFj/MFQSwKHISLcyALo9mY+17/v+WrkXNYo
+az2B7KU101Lsy+WMSVl56zqPFuNvKOWYxFmvZbqvebGWI+zdQ1k2lKy9JykOGIA9
+fQOb5+Cu6w7SJZNSh1FhrJnxODecjcQvD/cCrps2+akQPy8TR76oTwDA0tynV+4w
+J/alqA5E9OAnDXsgBB5YW2A2uyGrIum8OTizlboWWK/8SO+1+VRIPTuGkDbll3lo
+6MzaGXHiZdAsjmCScBv0DEyInFJC+/hOJ6Ac2N8TZ4eiuTYS/BED6Cug9dC8wLDX
+6i0WYWVrAgMBAAECggEAB2yKdlYtzGWzM73Vw3a2Mn/N0ENcmQAtr2qymvpZYJMj
+lcR9NlTWx1WPYNjRDbdywGOLvD1t/sCxvUS6OFYRhB/ngYISDXnKBl2YqH5+ou+R
+poiUQ/V7/Qymq2hCdWyQ8evCSakQcqkI3gn6OofPmDwFgbwG9WtDvInypQYPrxGt
+PxeicsMyqjsnB6RJ8vLX8qzD1ISzTcwuBb01hGuMoL7jecalnaZNOPsFwcgnJeX9
+UPRbTgLWuAhUpcWJ2BcKi1axiDR+shj7WpFiZkT53qFYLsuAX2n7XtmyTnIzC4bt
+ujr/I6T5HECu4rcyj3zGOOjxE31yxSiG6o3Krq0HIQKBgQDSIxLoPoOkAsXqSdWf
+YRPj3/l+H+1MAOgywxQ2kCWZ1M2eHch7cDaJC2yuLYwSOLySthsM1BN1wQdukq4D
+iM9ojqa6/fd/4mz6kLbcbCWNNIFYSOH/zauXjO6QkuGx06EY3bHxhhcNORq8K0RO
+qPHpNBFLNVT8Y9AdeKJXGcegwwKBgQDK8gZjk+6nQfM9ge3GdRHEccn700dmPeJ0
+Qqmy+AYS08R8HrRAlMFaOmMmA/24Bl9HoaPJnPCVxcUDK9LvqBcMpgVVcoGN8I3D
+xyBEBUsfjpULIZUxtROChLUJI44z8l3cH7Lb/pWxuS+YRcfEwtwEmo/wVclNMcrD
+IpBcdg1eOQKBgAq0xMLWZIiXp5O/PUYIgSXsBF8bq1Bi/3GOpNn+0BudTviOVeeM
+GQs0bM4W/frzrw/efVRS/cbTFdjZWkpNzxtpoS8Hv3NhiuHdO6PRUrx1/10LIZCR
+3vsyr/jnst4HhT6qFOXUShpfXXBW1/0V+HVENNlbF0BgqXrG6aZ8ZsJXAoGBAJf3
+4gbg+J2wieduCtJISdSzbI+xJ08NWiy62n5UsZ+ZihFzoICXo63f+Oy3ol8SDnkC
+Nja72YAdxyhXwa2KTjA/hdD1XMQf9Ng8nRGycQ2hZEQgkqrVMFXU8Ad2435MqDI0
+XmfUXN3nkRdScYQKclzULKLIamPuvCmhET7be6kpAoGAHyCJt5Rk4bgSye5w9yL6
+QTXa5JJsPIvCAkiD3vQWWT/H5P+xdkbg4i0thWs4J00IeiRecvXYrNl9FdJwxA9/
+2v54uCFCedfo4O6RM/Ej072W8FJtUyr7zeC+wJSBe1d9C6nG41a0IGcMeW8ksiGD
+lpBVpUpFyamQ/8kYl9RLMRM=
+-----END PRIVATE KEY-----";
 
-// ── JWT token builder ─────────────────────────────────────────────────────────
+// ── JWT token builder (RS256) ─────────────────────────────────────────────────
 
 #[derive(Serialize)]
 struct TestClaims {
     sub: String,
+    iss: String,
     exp: u64,
     subscriptions: Value,
 }
 
-/// Build a signed JWT with the given Clann subscription tier and status.
-/// Uses `TEST_JWT_SECRET` as the signing key.
+fn rs256_header() -> Header {
+    let mut h = Header::new(Algorithm::RS256);
+    h.kid = Some(TEST_KID.into());
+    h
+}
+
+fn rs256_key() -> EncodingKey {
+    EncodingKey::from_rsa_pem(TEST_KEY_PEM.as_bytes()).expect("test RSA key")
+}
+
+/// Build an RS256-signed JWT with the given Clann subscription tier and status.
 fn make_clann_jwt(tier: &str, status: &str) -> String {
     let claims = TestClaims {
         sub: "test-user-id".to_string(),
+        iss: TEST_ISSUER.to_string(),
         exp: 9_999_999_999,
         subscriptions: json!({ "clann": { "tier": tier, "status": status } }),
     };
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
-    )
-    .unwrap()
+    encode(&rs256_header(), &claims, &rs256_key()).unwrap()
 }
 
-/// Build a signed JWT with no subscriptions claim at all.
+/// Build an RS256-signed JWT with no subscriptions claim at all.
 fn make_jwt_no_subs() -> String {
     #[derive(Serialize)]
-    struct NoClaims { sub: String, exp: u64 }
-    let claims = NoClaims { sub: "test-user-id".to_string(), exp: 9_999_999_999 };
-    encode(&Header::default(), &claims, &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes())).unwrap()
+    struct NoClaims { sub: String, iss: String, exp: u64 }
+    let claims = NoClaims {
+        sub: "test-user-id".to_string(),
+        iss: TEST_ISSUER.to_string(),
+        exp: 9_999_999_999,
+    };
+    encode(&rs256_header(), &claims, &rs256_key()).unwrap()
+}
+
+/// Start a mock JWKS server serving the test RSA public key.
+async fn start_jwks_server() -> MockServer {
+    let jwks = serde_json::json!({
+        "keys": [{
+            "kty": "RSA", "use": "sig", "alg": "RS256",
+            "kid": TEST_KID, "n": TEST_KEY_N, "e": TEST_KEY_E,
+        }]
+    });
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/oauth2/jwks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(jwks))
+        .mount(&server)
+        .await;
+    server
 }
 
 // ── Auth-enabled setup ────────────────────────────────────────────────────────
 
-/// Like `setup()` but with JWT enforcement enabled.
-/// Returns both the router (for HTTP requests) and the raw DB handle
-/// (for direct data seeding in limit tests).
-async fn setup_with_auth() -> (axum::Router, Db) {
+/// Like `setup()` but with RS256 JWT enforcement enabled via a mock JWKS server.
+/// Returns the router, the raw DB handle, and the mock server (keep alive while testing).
+async fn setup_with_auth() -> (axum::Router, Db, MockServer) {
     let n = DB_COUNTER.fetch_add(1, Ordering::SeqCst);
     let conn = any::connect("mem://").await.unwrap();
     conn.signin(Root { username: "root".to_string(), password: "root".to_string() })
@@ -70,14 +129,22 @@ async fn setup_with_auth() -> (axum::Router, Db) {
     .await
     .unwrap();
 
+    let mock_server = start_jwks_server().await;
+    let validator = TokenValidator::new(
+        format!("{}/oauth2/jwks", mock_server.uri()),
+        TEST_ISSUER,
+        String::new(),
+    );
+
     let db: Db = Arc::new(Mutex::new(conn));
     let router = build_router(
         db.clone(),
         std::env::temp_dir().to_string_lossy().into_owned(),
         true,
-        Some(TEST_JWT_SECRET.to_string()),
+        Some(validator),
+        None, // MCP disabled in tests
     );
-    (router, db)
+    (router, db, mock_server)
 }
 
 // ── Request helpers (auth-enabled variants) ───────────────────────────────────
@@ -127,7 +194,7 @@ async fn setup() -> axum::Router {
     .unwrap();
 
     let db: Db = Arc::new(Mutex::new(conn));
-    build_router(db, std::env::temp_dir().to_string_lossy().into_owned(), true, None)
+    build_router(db, std::env::temp_dir().to_string_lossy().into_owned(), true, None, None)
 }
 
 async fn response_json(response: axum::response::Response) -> Value {
@@ -253,7 +320,7 @@ async fn test_create_person_returns_201_with_body() {
     let app = setup().await;
     let (status, body) = create_person_req(
         app,
-        json!({"family_name": "Smith", "first_name": "John", "sex": "Male", "trees": [TEST_TREE]}),
+        json!({"family_name": "Smith", "first_name": "John", "sex": "Male", "tree": TEST_TREE}),
     )
     .await;
 
@@ -276,7 +343,7 @@ async fn test_create_person_with_optional_fields() {
             "middle_name": "Marie",
             "date_of_birth": "1990-05-15",
             "place_of_birth": "Dublin",
-            "trees": [TEST_TREE],
+            "tree": TEST_TREE,
         }),
     )
     .await;
@@ -321,7 +388,7 @@ async fn test_list_persons_returns_all() {
             .clone()
             .oneshot(post_json(
                 "/api/persons",
-                json!({"family_name": "Test", "first_name": name, "sex": "Female", "trees": [TEST_TREE]}),
+                json!({"family_name": "Test", "first_name": name, "sex": "Female", "tree": TEST_TREE}),
             ))
             .await
             .unwrap();
@@ -339,7 +406,7 @@ async fn test_get_person_by_id() {
     let app = setup().await;
     let (_, created) = create_person_req(
         app.clone(),
-        json!({"family_name": "Walsh", "first_name": "Eoin", "sex": "Male", "trees": [TEST_TREE]}),
+        json!({"family_name": "Walsh", "first_name": "Eoin", "sex": "Male", "tree": TEST_TREE}),
     )
     .await;
     let id = record_id(&created);
@@ -372,7 +439,7 @@ async fn test_update_person_merges_fields() {
     let app = setup().await;
     let (_, created) = create_person_req(
         app.clone(),
-        json!({"family_name": "Murphy", "first_name": "Seán", "sex": "Male", "trees": [TEST_TREE]}),
+        json!({"family_name": "Murphy", "first_name": "Seán", "sex": "Male", "tree": TEST_TREE}),
     )
     .await;
     let id = record_id(&created);
@@ -381,16 +448,15 @@ async fn test_update_person_merges_fields() {
         .clone()
         .oneshot(put_json(
             &format!("/api/persons/{}", id),
-            json!({"family_name": "O'Murphy", "date_of_birth": "1980-01-01"}),
+            json!({"preferred_family_name": "O'Murphy"}),
         ))
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_json(response).await;
-    assert_eq!(body["family_name"], "O'Murphy");
-    assert_eq!(body["first_name"], "Seán"); // unchanged
-    assert_eq!(body["date_of_birth"], "1980-01-01");
+    assert_eq!(body["family_name"], "O'Murphy"); // effective name = preferred override
+    assert_eq!(body["first_name"], "Seán"); // unchanged (falls through to canonical)
 }
 
 #[tokio::test]
@@ -412,7 +478,7 @@ async fn test_delete_person_returns_204() {
     let app = setup().await;
     let (_, created) = create_person_req(
         app.clone(),
-        json!({"family_name": "Brennan", "first_name": "Aisling", "sex": "Female", "trees": [TEST_TREE]}),
+        json!({"family_name": "Brennan", "first_name": "Aisling", "sex": "Female", "tree": TEST_TREE}),
     )
     .await;
     let id = record_id(&created);
@@ -448,7 +514,7 @@ async fn test_delete_nonexistent_person_returns_204() {
 async fn make_person(app: axum::Router, name: &str, sex: &str) -> String {
     let (_, body) = create_person_req(
         app,
-        json!({"family_name": "Test", "first_name": name, "sex": sex, "trees": [TEST_TREE]}),
+        json!({"family_name": "Test", "first_name": name, "sex": sex, "tree": TEST_TREE}),
     )
     .await;
     record_id(&body)
@@ -458,7 +524,7 @@ async fn make_person(app: axum::Router, name: &str, sex: &str) -> String {
 async fn test_add_father_relationship_returns_201() {
     let app = setup().await;
     let child_id = make_person(app.clone(), "Child", "Male").await;
-    let father_id = format!("person:{}", make_person(app.clone(), "Father", "Male").await);
+    let father_id = format!("person_proxy:{}", make_person(app.clone(), "Father", "Male").await);
 
     let response = app
         .oneshot(post_json(
@@ -475,7 +541,7 @@ async fn test_add_father_relationship_returns_201() {
 async fn test_add_mother_relationship_returns_201() {
     let app = setup().await;
     let child_id = make_person(app.clone(), "Child", "Female").await;
-    let mother_id = format!("person:{}", make_person(app.clone(), "Mother", "Female").await);
+    let mother_id = format!("person_proxy:{}", make_person(app.clone(), "Mother", "Female").await);
 
     let response = app
         .oneshot(post_json(
@@ -492,7 +558,7 @@ async fn test_add_mother_relationship_returns_201() {
 async fn test_add_sibling_relationship_returns_201() {
     let app = setup().await;
     let person_id = make_person(app.clone(), "Sibling1", "Male").await;
-    let sibling_id = format!("person:{}", make_person(app.clone(), "Sibling2", "Female").await);
+    let sibling_id = format!("person_proxy:{}", make_person(app.clone(), "Sibling2", "Female").await);
 
     let response = app
         .oneshot(post_json(
@@ -509,7 +575,7 @@ async fn test_add_sibling_relationship_returns_201() {
 async fn test_add_sibling_without_sibling_type_returns_400() {
     let app = setup().await;
     let person_id = make_person(app.clone(), "P1", "Male").await;
-    let other_id = format!("person:{}", make_person(app.clone(), "P2", "Male").await);
+    let other_id = format!("person_proxy:{}", make_person(app.clone(), "P2", "Male").await);
 
     let response = app
         .oneshot(post_json(
@@ -534,11 +600,11 @@ async fn test_get_relationships_returns_grouped_persons() {
 
     // Add relationships
     for (rel_type, related_id, extra) in [
-        ("Father", format!("person:{}", father_id), json!({})),
-        ("Mother", format!("person:{}", mother_id), json!({})),
+        ("Father", format!("person_proxy:{}", father_id), json!({})),
+        ("Mother", format!("person_proxy:{}", mother_id), json!({})),
         (
             "Sibling",
-            format!("person:{}", sib_id),
+            format!("person_proxy:{}", sib_id),
             json!({"sibling_type": "Sister"}),
         ),
     ] {
@@ -582,7 +648,7 @@ async fn test_sibling_relationship_is_bidirectional() {
     app.clone()
         .oneshot(post_json(
             &format!("/api/persons/{}/relationships", a_id),
-            json!({"type": "Sibling", "related_id": format!("person:{}", b_id), "sibling_type": "Brother"}),
+            json!({"type": "Sibling", "related_id": format!("person_proxy:{}", b_id), "sibling_type": "Brother"}),
         ))
         .await
         .unwrap();
@@ -602,7 +668,7 @@ async fn test_delete_relationship_returns_204() {
     let app = setup().await;
     let child_id = make_person(app.clone(), "Child", "Male").await;
     let father_id = make_person(app.clone(), "Father", "Male").await;
-    let father_full = format!("person:{}", father_id);
+    let father_full = format!("person_proxy:{}", father_id);
 
     app.clone()
         .oneshot(post_json(
@@ -615,7 +681,7 @@ async fn test_delete_relationship_returns_204() {
     let response = app
         .clone()
         .oneshot(delete(&format!(
-            "/api/persons/{}/relationships/has_father/person:{}",
+            "/api/persons/{}/relationships/has_father/person_proxy:{}",
             child_id, father_id
         )))
         .await
@@ -635,7 +701,7 @@ async fn test_delete_relationship_returns_204() {
 async fn test_delete_relationship_invalid_type_returns_400() {
     let app = setup().await;
     let response = app
-        .oneshot(delete("/api/persons/abc/relationships/has_uncle/person:xyz"))
+        .oneshot(delete("/api/persons/abc/relationships/has_uncle/person_proxy:xyz"))
         .await
         .unwrap();
 
@@ -668,7 +734,7 @@ async fn test_family_tree_returns_nested_ancestors() {
     app.clone()
         .oneshot(post_json(
             &format!("/api/persons/{}/relationships", dad_id),
-            json!({"type": "Father", "related_id": format!("person:{}", grandpa_id)}),
+            json!({"type": "Father", "related_id": format!("person_proxy:{}", grandpa_id)}),
         ))
         .await
         .unwrap();
@@ -676,7 +742,7 @@ async fn test_family_tree_returns_nested_ancestors() {
     app.clone()
         .oneshot(post_json(
             &format!("/api/persons/{}/relationships", child_id),
-            json!({"type": "Father", "related_id": format!("person:{}", dad_id)}),
+            json!({"type": "Father", "related_id": format!("person_proxy:{}", dad_id)}),
         ))
         .await
         .unwrap();
@@ -700,7 +766,7 @@ async fn test_create_person_with_created_by() {
     let app = setup().await;
     let (status, body) = create_person_req(
         app,
-        json!({"family_name": "Nolan", "first_name": "Brian", "sex": "Male", "created_by": "admin", "trees": [TEST_TREE]}),
+        json!({"family_name": "Nolan", "first_name": "Brian", "sex": "Male", "created_by": "admin", "tree": TEST_TREE}),
     )
     .await;
 
@@ -716,13 +782,13 @@ async fn test_list_persons_filter_by_created_by() {
     for name in ["Anna", "Amy"] {
         create_person_req(
             app.clone(),
-            json!({"family_name": "Test", "first_name": name, "sex": "Female", "created_by": "alice", "trees": [TEST_TREE]}),
+            json!({"family_name": "Test", "first_name": name, "sex": "Female", "created_by": "alice", "tree": TEST_TREE}),
         )
         .await;
     }
     create_person_req(
         app.clone(),
-        json!({"family_name": "Test", "first_name": "Bob", "sex": "Male", "created_by": "bob", "trees": [TEST_TREE]}),
+        json!({"family_name": "Test", "first_name": "Bob", "sex": "Male", "created_by": "bob", "tree": TEST_TREE}),
     )
     .await;
 
@@ -748,7 +814,7 @@ async fn test_list_persons_filter_no_matches_returns_empty() {
     let app = setup().await;
     create_person_req(
         app.clone(),
-        json!({"family_name": "Test", "first_name": "Only", "sex": "Male", "created_by": "alice", "trees": [TEST_TREE]}),
+        json!({"family_name": "Test", "first_name": "Only", "sex": "Male", "created_by": "alice", "tree": TEST_TREE}),
     )
     .await;
 
@@ -766,7 +832,7 @@ async fn test_created_by_is_null_when_not_set() {
     let app = setup().await;
     let (_, body) = create_person_req(
         app,
-        json!({"family_name": "Ghost", "first_name": "User", "sex": "Male", "trees": [TEST_TREE]}),
+        json!({"family_name": "Ghost", "first_name": "User", "sex": "Male", "tree": TEST_TREE}),
     )
     .await;
 
@@ -778,7 +844,7 @@ async fn test_update_person_created_by() {
     let app = setup().await;
     let (_, created) = create_person_req(
         app.clone(),
-        json!({"family_name": "Casey", "first_name": "Pat", "sex": "Male", "trees": [TEST_TREE]}),
+        json!({"family_name": "Casey", "first_name": "Pat", "sex": "Male", "tree": TEST_TREE}),
     )
     .await;
     let id = record_id(&created);
@@ -803,7 +869,7 @@ async fn test_list_filter_created_by_is_case_sensitive() {
     let app = setup().await;
     create_person_req(
         app.clone(),
-        json!({"family_name": "Test", "first_name": "Lower", "sex": "Male", "created_by": "alice", "trees": [TEST_TREE]}),
+        json!({"family_name": "Test", "first_name": "Lower", "sex": "Male", "created_by": "alice", "tree": TEST_TREE}),
     )
     .await;
 
@@ -822,18 +888,18 @@ async fn test_list_filter_created_by_only_returns_own_records() {
     let app = setup().await;
     create_person_req(
         app.clone(),
-        json!({"family_name": "A", "first_name": "One", "sex": "Male", "created_by": "userA", "trees": [TEST_TREE]}),
+        json!({"family_name": "A", "first_name": "One", "sex": "Male", "created_by": "userA", "tree": TEST_TREE}),
     )
     .await;
     create_person_req(
         app.clone(),
-        json!({"family_name": "B", "first_name": "Two", "sex": "Female", "created_by": "userB", "trees": [TEST_TREE]}),
+        json!({"family_name": "B", "first_name": "Two", "sex": "Female", "created_by": "userB", "tree": TEST_TREE}),
     )
     .await;
     // No created_by set
     create_person_req(
         app.clone(),
-        json!({"family_name": "C", "first_name": "Three", "sex": "Male", "trees": [TEST_TREE]}),
+        json!({"family_name": "C", "first_name": "Three", "sex": "Male", "tree": TEST_TREE}),
     )
     .await;
 
@@ -862,7 +928,7 @@ async fn test_create_person_with_profile_fields() {
             "nickname": "Neve",
             "username": "nkelly",
             "email": "niamh@example.com",
-            "trees": [TEST_TREE],
+            "tree": TEST_TREE,
         }),
     )
     .await;
@@ -878,7 +944,7 @@ async fn test_profile_fields_are_null_when_not_set() {
     let app = setup().await;
     let (_, body) = create_person_req(
         app,
-        json!({"family_name": "Ryan", "first_name": "Cian", "sex": "Male", "trees": [TEST_TREE]}),
+        json!({"family_name": "Ryan", "first_name": "Cian", "sex": "Male", "tree": TEST_TREE}),
     )
     .await;
 
@@ -892,7 +958,7 @@ async fn test_update_person_profile_fields() {
     let app = setup().await;
     let (_, created) = create_person_req(
         app.clone(),
-        json!({"family_name": "Burke", "first_name": "Aoife", "sex": "Female", "trees": [TEST_TREE]}),
+        json!({"family_name": "Burke", "first_name": "Aoife", "sex": "Female", "tree": TEST_TREE}),
     )
     .await;
     let id = record_id(&created);
@@ -926,7 +992,7 @@ async fn test_update_omits_null_fields_leaving_existing_values_intact() {
             "first_name": "Oisín",
             "sex": "Male",
             "nickname": "Osh",
-            "trees": [TEST_TREE],
+            "tree": TEST_TREE,
         }),
     )
     .await;
@@ -936,7 +1002,7 @@ async fn test_update_omits_null_fields_leaving_existing_values_intact() {
         .clone()
         .oneshot(put_json(
             &format!("/api/persons/{}", id),
-            json!({"nickname": null, "first_name": "Oisín Updated"}),
+            json!({"nickname": null, "preferred_first_name": "Oisín Updated"}),
         ))
         .await
         .unwrap();
@@ -945,7 +1011,7 @@ async fn test_update_omits_null_fields_leaving_existing_values_intact() {
     let body = response_json(response).await;
     // null was skipped — nickname retains its original value
     assert_eq!(body["nickname"], "Osh");
-    assert_eq!(body["first_name"], "Oisín Updated");
+    assert_eq!(body["first_name"], "Oisín Updated"); // effective first_name = preferred override
 }
 
 // ── Spouse relationship ───────────────────────────────────────────────────────
@@ -954,7 +1020,7 @@ async fn test_update_omits_null_fields_leaving_existing_values_intact() {
 async fn test_add_spouse_relationship_returns_201() {
     let app = setup().await;
     let a_id = make_person(app.clone(), "Bride", "Female").await;
-    let b_id = format!("person:{}", make_person(app.clone(), "Groom", "Male").await);
+    let b_id = format!("person_proxy:{}", make_person(app.clone(), "Groom", "Male").await);
 
     let response = app
         .oneshot(post_json(
@@ -976,7 +1042,7 @@ async fn test_spouse_relationship_is_bidirectional() {
     app.clone()
         .oneshot(post_json(
             &format!("/api/persons/{}/relationships", a_id),
-            json!({"type": "Spouse", "related_id": format!("person:{}", b_id)}),
+            json!({"type": "Spouse", "related_id": format!("person_proxy:{}", b_id)}),
         ))
         .await
         .unwrap();
@@ -1002,7 +1068,7 @@ async fn test_spouse_relationship_with_dates() {
             &format!("/api/persons/{}/relationships", a_id),
             json!({
                 "type": "Spouse",
-                "related_id": format!("person:{}", b_id),
+                "related_id": format!("person_proxy:{}", b_id),
                 "spouse_from": "2000-07-14",
                 "spouse_to": "2015-03-01",
             }),
@@ -1026,7 +1092,7 @@ async fn test_update_spouse_dates() {
     let app = setup().await;
     let a_id = make_person(app.clone(), "Jamie", "Male").await;
     let b_id = make_person(app.clone(), "Robin", "Female").await;
-    let b_full = format!("person:{}", b_id);
+    let b_full = format!("person_proxy:{}", b_id);
 
     app.clone()
         .oneshot(post_json(
@@ -1060,7 +1126,7 @@ async fn test_delete_spouse_relationship_removes_both_directions() {
     let app = setup().await;
     let a_id = make_person(app.clone(), "Lee", "Male").await;
     let b_id = make_person(app.clone(), "Jordan", "Female").await;
-    let b_full = format!("person:{}", b_id);
+    let b_full = format!("person_proxy:{}", b_id);
 
     app.clone()
         .oneshot(post_json(
@@ -1105,7 +1171,7 @@ async fn test_family_tree_includes_spouse_and_children() {
     app.clone()
         .oneshot(post_json(
             &format!("/api/persons/{}/relationships", parent_id),
-            json!({"type": "Spouse", "related_id": format!("person:{}", spouse_id)}),
+            json!({"type": "Spouse", "related_id": format!("person_proxy:{}", spouse_id)}),
         ))
         .await
         .unwrap();
@@ -1114,7 +1180,7 @@ async fn test_family_tree_includes_spouse_and_children() {
     app.clone()
         .oneshot(post_json(
             &format!("/api/persons/{}/relationships", child_id),
-            json!({"type": "Father", "related_id": format!("person:{}", parent_id)}),
+            json!({"type": "Father", "related_id": format!("person_proxy:{}", parent_id)}),
         ))
         .await
         .unwrap();
@@ -1322,7 +1388,7 @@ async fn test_delete_family_tree_cascades_persons() {
     // Create a person in that tree
     let (_, person) = create_person_req(
         app.clone(),
-        json!({"family_name": "Test", "first_name": "Gone", "sex": "Male", "trees": ["cascade-tree"]}),
+        json!({"family_name": "Test", "first_name": "Gone", "sex": "Male", "tree": "cascade-tree"}),
     )
     .await;
     let person_id = record_id(&person);
@@ -1356,7 +1422,7 @@ async fn test_create_person_with_unknown_tree_returns_400() {
     let app = setup().await;
     let (status, body) = create_person_req(
         app,
-        json!({"family_name": "Smith", "first_name": "John", "sex": "Male", "trees": ["no-such-tree"]}),
+        json!({"family_name": "Smith", "first_name": "John", "sex": "Male", "tree": "no-such-tree"}),
     )
     .await;
 
@@ -1379,12 +1445,12 @@ async fn test_list_persons_filter_by_tree() {
 
     create_person_req(
         app.clone(),
-        json!({"family_name": "A", "first_name": "Alice", "sex": "Female", "trees": [TEST_TREE]}),
+        json!({"family_name": "A", "first_name": "Alice", "sex": "Female", "tree": TEST_TREE}),
     )
     .await;
     create_person_req(
         app.clone(),
-        json!({"family_name": "B", "first_name": "Bob", "sex": "Male", "trees": ["other-tree"]}),
+        json!({"family_name": "B", "first_name": "Bob", "sex": "Male", "tree": "other-tree"}),
     )
     .await;
 
@@ -1403,12 +1469,12 @@ async fn test_list_persons_filter_by_tree() {
 
 #[tokio::test]
 async fn test_missing_jwt_returns_401() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     // POST /api/persons with no Authorization header
     let response = app
         .oneshot(post_json(
             "/api/persons",
-            json!({"family_name": "Test", "first_name": "Nobody", "sex": "Male", "trees": [TEST_TREE]}),
+            json!({"family_name": "Test", "first_name": "Nobody", "sex": "Male", "tree": TEST_TREE}),
         ))
         .await
         .unwrap();
@@ -1417,7 +1483,7 @@ async fn test_missing_jwt_returns_401() {
 
 #[tokio::test]
 async fn test_invalid_jwt_returns_401() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let response = app
         .oneshot(
             Request::builder()
@@ -1426,7 +1492,7 @@ async fn test_invalid_jwt_returns_401() {
                 .header("content-type", "application/json")
                 .header("authorization", "Bearer this.is.not.valid")
                 .body(Body::from(
-                    json!({"family_name": "T", "first_name": "N", "sex": "Male", "trees": [TEST_TREE]})
+                    json!({"family_name": "T", "first_name": "N", "sex": "Male", "tree": TEST_TREE})
                         .to_string(),
                 ))
                 .unwrap(),
@@ -1438,12 +1504,12 @@ async fn test_invalid_jwt_returns_401() {
 
 #[tokio::test]
 async fn test_valid_jwt_allows_request() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("individual", "active");
     let response = app
         .oneshot(post_json_auth(
             "/api/persons",
-            json!({"family_name": "Test", "first_name": "Valid", "sex": "Male", "trees": [TEST_TREE]}),
+            json!({"family_name": "Test", "first_name": "Valid", "sex": "Male", "tree": TEST_TREE}),
             &token,
         ))
         .await
@@ -1455,12 +1521,12 @@ async fn test_valid_jwt_allows_request() {
 async fn test_jwt_with_no_subscriptions_treated_as_individual() {
     // No subscriptions claim → defaults to individual (limit=2 trees / 100 members)
     // Just confirm the request is accepted (not 401)
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_jwt_no_subs();
     let response = app
         .oneshot(post_json_auth(
             "/api/persons",
-            json!({"family_name": "Test", "first_name": "NoSub", "sex": "Male", "trees": [TEST_TREE]}),
+            json!({"family_name": "Test", "first_name": "NoSub", "sex": "Male", "tree": TEST_TREE}),
             &token,
         ))
         .await
@@ -1473,7 +1539,7 @@ async fn test_jwt_with_no_subscriptions_treated_as_individual() {
 
 #[tokio::test]
 async fn test_individual_tree_limit_is_two() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("individual", "active");
     const OWNER: &str = "limit-tree-user";
 
@@ -1507,7 +1573,7 @@ async fn test_individual_tree_limit_is_two() {
 
 #[tokio::test]
 async fn test_professional_tree_limit_is_unlimited() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("professional", "active");
     const OWNER: &str = "pro-tree-user";
 
@@ -1528,7 +1594,7 @@ async fn test_professional_tree_limit_is_unlimited() {
 
 #[tokio::test]
 async fn test_family_tree_limit_is_ten() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("family", "active");
     const OWNER: &str = "family-tree-limit-user";
 
@@ -1563,7 +1629,7 @@ async fn test_family_tree_limit_is_ten() {
 
 #[tokio::test]
 async fn test_individual_member_limit_is_100() {
-    let (app, db) = setup_with_auth().await;
+    let (app, db, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("individual", "active");
     const CREATOR: &str = "limit-person-user";
 
@@ -1571,9 +1637,8 @@ async fn test_individual_member_limit_is_100() {
     {
         let db = db.lock().await;
         for i in 0..100u32 {
-            db.query("CREATE person CONTENT { family_name: 'Seed', first_name: $n, sex: 'Male', trees: [$tree], created_by: $creator }")
+            db.query("CREATE person CONTENT { family_name: 'Seed', first_name: $n, sex: 'Male', created_by: $creator }")
                 .bind(("n", format!("Seed{i}")))
-                .bind(("tree", TEST_TREE))
                 .bind(("creator", CREATOR))
                 .await
                 .unwrap();
@@ -1584,7 +1649,7 @@ async fn test_individual_member_limit_is_100() {
     let resp = app
         .oneshot(post_json_auth(
             "/api/persons",
-            json!({"family_name": "Over", "first_name": "Limit", "sex": "Male", "trees": [TEST_TREE], "created_by": CREATOR}),
+            json!({"family_name": "Over", "first_name": "Limit", "sex": "Male", "tree": TEST_TREE, "created_by": CREATOR}),
             &token,
         ))
         .await
@@ -1596,7 +1661,7 @@ async fn test_individual_member_limit_is_100() {
 
 #[tokio::test]
 async fn test_individual_member_limit_at_99_allows_one_more() {
-    let (app, db) = setup_with_auth().await;
+    let (app, db, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("individual", "active");
     const CREATOR: &str = "limit-person-user-99";
 
@@ -1604,9 +1669,8 @@ async fn test_individual_member_limit_at_99_allows_one_more() {
     {
         let db = db.lock().await;
         for i in 0..99u32 {
-            db.query("CREATE person CONTENT { family_name: 'Seed', first_name: $n, sex: 'Male', trees: [$tree], created_by: $creator }")
+            db.query("CREATE person CONTENT { family_name: 'Seed', first_name: $n, sex: 'Male', created_by: $creator }")
                 .bind(("n", format!("Seed{i}")))
-                .bind(("tree", TEST_TREE))
                 .bind(("creator", CREATOR))
                 .await
                 .unwrap();
@@ -1617,7 +1681,7 @@ async fn test_individual_member_limit_at_99_allows_one_more() {
     let resp = app
         .oneshot(post_json_auth(
             "/api/persons",
-            json!({"family_name": "Last", "first_name": "Allowed", "sex": "Male", "trees": [TEST_TREE], "created_by": CREATOR}),
+            json!({"family_name": "Last", "first_name": "Allowed", "sex": "Male", "tree": TEST_TREE, "created_by": CREATOR}),
             &token,
         ))
         .await
@@ -1627,7 +1691,7 @@ async fn test_individual_member_limit_at_99_allows_one_more() {
 
 #[tokio::test]
 async fn test_professional_member_limit_is_unlimited() {
-    let (app, db) = setup_with_auth().await;
+    let (app, db, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("professional", "active");
     const CREATOR: &str = "pro-person-user";
 
@@ -1635,9 +1699,8 @@ async fn test_professional_member_limit_is_unlimited() {
     {
         let db = db.lock().await;
         for i in 0..100u32 {
-            db.query("CREATE person CONTENT { family_name: 'Seed', first_name: $n, sex: 'Male', trees: [$tree], created_by: $creator }")
+            db.query("CREATE person CONTENT { family_name: 'Seed', first_name: $n, sex: 'Male', created_by: $creator }")
                 .bind(("n", format!("Seed{i}")))
-                .bind(("tree", TEST_TREE))
                 .bind(("creator", CREATOR))
                 .await
                 .unwrap();
@@ -1648,7 +1711,7 @@ async fn test_professional_member_limit_is_unlimited() {
     let resp = app
         .oneshot(post_json_auth(
             "/api/persons",
-            json!({"family_name": "Pro", "first_name": "Extra", "sex": "Male", "trees": [TEST_TREE], "created_by": CREATOR}),
+            json!({"family_name": "Pro", "first_name": "Extra", "sex": "Male", "tree": TEST_TREE, "created_by": CREATOR}),
             &token,
         ))
         .await
@@ -1659,7 +1722,7 @@ async fn test_professional_member_limit_is_unlimited() {
 #[tokio::test]
 async fn test_inactive_subscription_treated_as_individual() {
     // A canceled/inactive subscription should default to individual tier limits
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     // "professional" tier but "canceled" status → should behave as individual
     let token = make_clann_jwt("professional", "canceled");
     const OWNER: &str = "canceled-sub-user";
@@ -1689,7 +1752,7 @@ async fn test_inactive_subscription_treated_as_individual() {
 
 #[tokio::test]
 async fn test_get_endpoints_accessible_with_valid_jwt() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("individual", "active");
 
     // GET /api/persons should be accessible (read operations need auth too)
@@ -1702,7 +1765,7 @@ async fn test_get_endpoints_accessible_with_valid_jwt() {
 
 #[tokio::test]
 async fn test_get_endpoints_blocked_without_jwt() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let resp = app.oneshot(get("/api/persons")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
@@ -2232,7 +2295,7 @@ fn delete_auth(uri: &str, token: &str) -> Request<Body> {
 
 #[tokio::test]
 async fn test_get_ai_settings_not_found_when_empty() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("individual", "active");
     let response = app
         .oneshot(get_auth("/api/ai-settings", &token))
@@ -2243,7 +2306,7 @@ async fn test_get_ai_settings_not_found_when_empty() {
 
 #[tokio::test]
 async fn test_upsert_ai_settings_creates_new() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("individual", "active");
 
     let response = app
@@ -2270,7 +2333,7 @@ async fn test_upsert_ai_settings_creates_new() {
 
 #[tokio::test]
 async fn test_upsert_ai_settings_is_idempotent() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("individual", "active");
 
     // First PUT
@@ -2300,7 +2363,7 @@ async fn test_upsert_ai_settings_is_idempotent() {
 
 #[tokio::test]
 async fn test_delete_ai_settings_returns_204() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("individual", "active");
 
     // Create settings first
@@ -2330,7 +2393,7 @@ async fn test_delete_ai_settings_returns_204() {
 
 #[tokio::test]
 async fn test_delete_ai_settings_when_none_is_noop() {
-    let (app, _) = setup_with_auth().await;
+    let (app, _, _mock) = setup_with_auth().await;
     let token = make_clann_jwt("individual", "active");
 
     // Delete with nothing stored — should still return 204

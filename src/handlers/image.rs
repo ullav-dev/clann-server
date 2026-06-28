@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::{Multipart, Path, Query, State},
+    extract::{Multipart, Path, State},
     http::{header, Response, StatusCode},
     response::IntoResponse,
     Extension,
@@ -12,9 +12,9 @@ use crate::{
     auth::ClannAuth,
     db::Db,
     error::AppError,
-    handlers::person::{PersonFilter, can_write_to_person},
+    handlers::person::{can_write_to_proxy, fetch_proxy_and_canonical},
     models::family_tree::FamilyTree,
-    models::person::Person,
+    models::person::PersonProxy,
 };
 
 const MAX_IMAGE_BYTES: usize = 2 * 1024 * 1024; // 2 MB hard cap for profile pictures
@@ -39,10 +39,10 @@ fn mime_for_ext(ext: &str) -> &'static str {
     }
 }
 
-/// Queries total media bytes used by `user_id` across all their persons.
+/// Queries total media bytes used by `user_id` across all their person_proxy records.
 async fn total_media_bytes(db: &crate::db::DbConn, user_id: &str) -> Result<i64, crate::error::AppError> {
     let result: Option<i64> = db
-        .query("RETURN math::sum((SELECT VALUE (image_bytes ?? 0) + (life_image_bytes ?? 0) FROM person WHERE created_by = $uid))")
+        .query("RETURN math::sum((SELECT VALUE (image_bytes ?? 0) + (life_image_bytes ?? 0) FROM person_proxy WHERE created_by = $uid))")
         .bind(("uid", user_id.to_string()))
         .await?
         .take(0)?;
@@ -74,14 +74,16 @@ pub async fn upload_image(
     Extension(upload_dir): Extension<String>,
     Extension(auth): Extension<ClannAuth>,
     Path(id): Path<String>,
-    Query(filter): Query<PersonFilter>,
     mut multipart: Multipart,
 ) -> Result<StatusCode, AppError> {
-    let person: Option<Person> = db.lock().await.select(("person", id.as_str())).await?;
-    let person = person.ok_or(AppError::NotFound)?;
+    let (proxy, _) = {
+        let db_conn = db.lock().await;
+        fetch_proxy_and_canonical(&db_conn, &id).await?
+    };
+    let old_image_bytes = proxy.image_bytes;
     {
         let db_conn = db.lock().await;
-        can_write_to_person(&person, &auth, &db_conn).await?;
+        can_write_to_proxy(&proxy, &auth, &db_conn).await?;
     }
 
     while let Some(field) = multipart.next_field().await.map_err(|e| AppError::BadRequest(e.to_string()))? {
@@ -128,7 +130,7 @@ pub async fn upload_image(
         if let Some(limit) = auth.storage_limit_bytes() {
             let db_conn = db.lock().await;
             let total = total_media_bytes(&db_conn, &auth.user_id).await?;
-            let old_bytes = person.image_bytes.unwrap_or(0);
+            let old_bytes = old_image_bytes.unwrap_or(0);
             if total - old_bytes + new_size > limit {
                 let limit_mb = limit / (1024 * 1024);
                 return Err(AppError::Forbidden(format!(
@@ -152,9 +154,9 @@ pub async fn upload_image(
             AppError::BadRequest(format!("Failed to write image: {e}"))
         })?;
 
-        let _: Option<Person> = db
+        let _: Option<PersonProxy> = db
             .lock().await
-            .update(("person", id.as_str()))
+            .update(("person_proxy", id.as_str()))
             .merge(json!({ "image_path": filename, "image_bytes": new_size }))
             .await?;
 
@@ -181,10 +183,10 @@ pub async fn get_image(
     Extension(upload_dir): Extension<String>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let person: Option<Person> = db.lock().await.select(("person", id.as_str())).await?;
-    let person = person.ok_or(AppError::NotFound)?;
+    let proxy: Option<PersonProxy> = db.lock().await.select(("person_proxy", id.as_str())).await?;
+    let proxy = proxy.ok_or(AppError::NotFound)?;
 
-    let filename = person.image_path.ok_or(AppError::NotFound)?;
+    let filename = proxy.image_path.ok_or(AppError::NotFound)?;
     let ext = filename.rsplit('.').next().unwrap_or("jpg");
     let content_type = mime_for_ext(ext);
 
@@ -225,14 +227,16 @@ pub async fn upload_life_image(
     Extension(upload_dir): Extension<String>,
     Extension(auth): Extension<ClannAuth>,
     Path(id): Path<String>,
-    Query(filter): Query<PersonFilter>,
     mut multipart: Multipart,
 ) -> Result<StatusCode, AppError> {
-    let person: Option<Person> = db.lock().await.select(("person", id.as_str())).await?;
-    let person = person.ok_or(AppError::NotFound)?;
+    let (proxy, _) = {
+        let db_conn = db.lock().await;
+        fetch_proxy_and_canonical(&db_conn, &id).await?
+    };
+    let old_life_bytes = proxy.life_image_bytes;
     {
         let db_conn = db.lock().await;
-        can_write_to_person(&person, &auth, &db_conn).await?;
+        can_write_to_proxy(&proxy, &auth, &db_conn).await?;
     }
 
     while let Some(field) = multipart.next_field().await.map_err(|e| AppError::BadRequest(e.to_string()))? {
@@ -280,7 +284,7 @@ pub async fn upload_life_image(
         if let Some(limit) = auth.storage_limit_bytes() {
             let db_conn = db.lock().await;
             let total = total_media_bytes(&db_conn, &auth.user_id).await?;
-            let old_bytes = person.life_image_bytes.unwrap_or(0);
+            let old_bytes = old_life_bytes.unwrap_or(0);
             if total - old_bytes + new_size > limit {
                 let limit_mb = limit / (1024 * 1024);
                 return Err(AppError::Forbidden(format!(
@@ -305,9 +309,9 @@ pub async fn upload_life_image(
             AppError::BadRequest(format!("Failed to write life media: {e}"))
         })?;
 
-        let _: Option<Person> = db
+        let _: Option<PersonProxy> = db
             .lock().await
-            .update(("person", id.as_str()))
+            .update(("person_proxy", id.as_str()))
             .merge(json!({ "life_image_path": filename, "life_image_bytes": new_size }))
             .await?;
 
@@ -334,10 +338,10 @@ pub async fn get_life_image(
     Extension(upload_dir): Extension<String>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let person: Option<Person> = db.lock().await.select(("person", id.as_str())).await?;
-    let person = person.ok_or(AppError::NotFound)?;
+    let proxy: Option<PersonProxy> = db.lock().await.select(("person_proxy", id.as_str())).await?;
+    let proxy = proxy.ok_or(AppError::NotFound)?;
 
-    let filename = person.life_image_path.ok_or(AppError::NotFound)?;
+    let filename = proxy.life_image_path.ok_or(AppError::NotFound)?;
     let ext = filename.rsplit('.').next().unwrap_or("jpg");
     let content_type = mime_for_ext(ext);
 
