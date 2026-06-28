@@ -5063,6 +5063,7 @@ dependencies = [
 [[package]]
 name = "ullav-mcp-auth"
 version = "0.1.0"
+source = "git+https://github.com/ullav-dev/ullav-mcp-auth#8b408c78ffaeaa0e119111a0197c16ec766fbeb0"
 dependencies = [
  "chrono",
  "dashmap",
