@@ -222,6 +222,29 @@ curl -X PATCH http://localhost:3000/api/persons/{id}/spouse-dates/person:{spouse
   -d '{"spouse_from": "1995-06-10", "spouse_to": "2010-03-01"}'
 ```
 
+### Relationship pedigree
+
+Parent and sibling relationships carry an optional `pedigree` field that records the nature of the connection.
+
+**Parent edges** (`has_father`, `has_mother`):
+
+| `pedigree` | Meaning |
+|------------|---------|
+| `birth`    | Biological parent (default) |
+| `adopted`  | Adoptive parent |
+
+**Sibling edges** (`has_sibling`):
+
+| `pedigree` | Meaning |
+|------------|---------|
+| `birth`    | Full sibling — shares both parents |
+| `half`     | Half sibling — shares exactly one biological parent |
+| `adopted`  | Sibling through an adoptive family |
+
+**Design rationale:** Step-parent and step-sibling relationships are intentionally not stored as edges. A step-parent is already present in the tree as the spouse of a biological parent — recording a separate step-parent edge would be redundant and genealogically misleading. Step-sibling relationships are likewise derivable from spouse edges and are not genealogical facts. Foster relationships carry no genealogical information and are excluded entirely.
+
+Half siblings arise when two people share exactly one biological parent. This is a genuine genealogical fact and is modelled explicitly. When you add a biological parent to a person, Clann checks each of that parent's other children to determine whether the relationship is full (`birth`) or half — a sibling who shares both parents is `birth`; one who shares only this parent is `half`. The `via_parent_id` field on sibling edges records which parent they share, so half-sibling families can be correctly grouped in the tree view.
+
 ### Life Events
 
 Life events record significant occurrences in a person's life (Birth, Death, Marriage, Graduation, Military service, etc.).

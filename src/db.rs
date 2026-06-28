@@ -33,8 +33,18 @@ pub async fn connect(config: &Config) -> anyhow::Result<Db> {
     let schema = include_str!("../migrations/schema.surql");
     db.query(schema).await?;
 
+    // Backfill legacy person records that predate the verified/trees fields.
     db.query("UPDATE person SET verified = false WHERE verified = NONE").await?;
     db.query("UPDATE person SET trees = [tree] WHERE tree != NONE AND (trees = NONE OR trees = [])").await?;
+
+    // Pedigree refactor: remove foster/step parent edges, convert step siblings to half.
+    // These are idempotent — safe to run on every startup.
+    db.query("DELETE has_father WHERE pedigree = 'foster'").await?;
+    db.query("DELETE has_father WHERE pedigree = 'step'").await?;
+    db.query("DELETE has_mother WHERE pedigree = 'foster'").await?;
+    db.query("DELETE has_mother WHERE pedigree = 'step'").await?;
+    db.query("UPDATE has_sibling SET pedigree = 'half' WHERE pedigree = 'step'").await?;
+    db.query("DELETE has_sibling WHERE pedigree = 'foster'").await?;
 
     seed_life_events(&db).await?;
 
