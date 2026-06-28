@@ -10,6 +10,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+      - name: Configure git for private repos
+        run: git config --global url."https://x-access-token:${{ secrets.PAT_CLASSIC }}@github.com/".insteadOf "https://github.com/"
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Cache Rust build
@@ -41,6 +43,8 @@ jobs:
         with:
           context: .
           push: true
+          secrets: |
+            git_auth_token=${{ secrets.PAT_CLASSIC }}
           tags: |
             ghcr.io/ullav-dev/clann-server:${{ steps.commit.outputs.short }}
             ghcr.io/ullav-dev/clann-server:latest
