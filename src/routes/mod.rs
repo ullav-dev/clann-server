@@ -88,7 +88,16 @@ async fn mcp_auth_middleware(
                 Json(serde_json::json!({ "error": "invalid_token" })),
             )
                 .into_response(),
-            Ok(_) => next.run(req).await,
+            Ok(claims) => {
+                let username = claims
+                    .get("username")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                crate::mcp::server::AUTHENTICATED_USERNAME
+                    .scope(username, next.run(req))
+                    .await
+            }
         },
     }
 }
