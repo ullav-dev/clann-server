@@ -101,14 +101,14 @@ impl ClannServer {
     ) -> Result<String, rmcp::ErrorData> {
         let db = self.db.lock().await;
         let rows: Vec<serde_json::Value> = db
-            .query("SELECT <string>id AS id, name, display_name, owner, is_primary, team_id FROM family_tree WHERE owner = $username")
+            .query("SELECT <string>id AS id, name, display_name, is_primary, team_id FROM family_tree WHERE owner = $username")
             .bind(("username", p.username))
             .await
             .map_err(db_err)?
             .take(0)
             .map_err(db_err)?;
 
-        Ok(serde_json::to_string_pretty(&rows).unwrap())
+        Ok(to_safe_json(serde_json::to_value(&rows).unwrap()))
     }
 
     /// Search for persons by name within a family tree.
@@ -156,7 +156,7 @@ impl ClannServer {
             .take(20)
             .collect();
 
-        Ok(serde_json::to_string_pretty(&matches).unwrap())
+        Ok(to_safe_json(serde_json::to_value(&matches).unwrap()))
     }
 
     /// Get full details of a person by their proxy ID (includes canonical birth/death data).
@@ -175,7 +175,7 @@ impl ClannServer {
                     <string>person_id AS canonical_person_id, \
                     tree, \
                     preferred_first_name, preferred_family_name, preferred_middle_name, \
-                    nickname, biography, username, email, is_private, verified, \
+                    nickname, biography, is_private, verified, \
                     person_id.first_name AS canonical_first_name, \
                     person_id.family_name AS canonical_family_name, \
                     person_id.middle_name AS canonical_middle_name, \
@@ -199,7 +199,7 @@ impl ClannServer {
                 format!("person_proxy '{}' not found", p.person_proxy_id),
                 None,
             )),
-            Some(v) => Ok(serde_json::to_string_pretty(&v).unwrap()),
+            Some(v) => Ok(to_safe_json(v)),
         }
     }
 
@@ -311,7 +311,7 @@ impl ClannServer {
             "children": children,
         });
 
-        Ok(serde_json::to_string_pretty(&result).unwrap())
+        Ok(to_safe_json(serde_json::to_value(&result).unwrap()))
     }
 
     /// Find potential duplicate persons across all family trees.
@@ -368,7 +368,7 @@ impl ClannServer {
         let my_pob = proxy.get("pob").and_then(|v| v.as_str());
 
         if first_name.is_empty() || family_name.is_empty() {
-            return Ok(serde_json::to_string_pretty(&serde_json::json!({ "count": 0, "matches": [] })).unwrap());
+            return Ok(to_safe_json(serde_json::json!({ "count": 0, "matches": [] })));
         }
 
         // Find all proxies with the same name pointing to a different canonical person.
@@ -476,7 +476,7 @@ impl ClannServer {
             "matches": matches,
         });
 
-        Ok(serde_json::to_string_pretty(&result).unwrap())
+        Ok(to_safe_json(serde_json::to_value(&result).unwrap()))
     }
 
     /// List your contact requests (sent and/or received).
@@ -496,7 +496,7 @@ impl ClannServer {
         let mut query = match p.role.as_deref() {
             Some("sent") => {
                 db.query(
-                    "SELECT <string>id AS id, from_user, to_user, status, \
+                    "SELECT <string>id AS id, from_user, status, \
                             initial_message, created_at, updated_at \
                      FROM merge_contact_request \
                      WHERE from_user = $user \
@@ -508,7 +508,7 @@ impl ClannServer {
             }
             Some("received") => {
                 db.query(
-                    "SELECT <string>id AS id, from_user, to_user, status, \
+                    "SELECT <string>id AS id, to_user, status, \
                             initial_message, created_at, updated_at \
                      FROM merge_contact_request \
                      WHERE to_user = $user \
@@ -534,29 +534,17 @@ impl ClannServer {
 
         let rows: Vec<serde_json::Value> = query.take(0).map_err(db_err)?;
 
-        // Apply privacy filter: mask the other party's username until accepted.
+        // Replace from_user/to_user with a direction indicator — usernames are never returned.
         let filtered: Vec<serde_json::Value> = rows
             .into_iter()
             .map(|row| {
                 let status = row.get("status").and_then(|v| v.as_str()).unwrap_or("pending");
-                let from = row.get("from_user").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let to = row.get("to_user").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let accepted = status == "accepted";
-
-                let (display_from, display_to) = if accepted {
-                    (from, to)
-                } else if from == p.username {
-                    // Sent by us — mask the recipient
-                    (from, "(pending — identity protected)".to_string())
-                } else {
-                    // Received by us — mask the sender
-                    ("(pending — identity protected)".to_string(), to)
-                };
+                let from = row.get("from_user").and_then(|v| v.as_str()).unwrap_or("");
+                let direction = if from == p.username { "sent" } else { "received" };
 
                 serde_json::json!({
                     "id": row.get("id"),
-                    "from_user": display_from,
-                    "to_user": display_to,
+                    "direction": direction,
                     "status": status,
                     "initial_message": row.get("initial_message"),
                     "created_at": row.get("created_at"),
@@ -565,7 +553,7 @@ impl ClannServer {
             })
             .collect();
 
-        Ok(serde_json::to_string_pretty(&filtered).unwrap())
+        Ok(to_safe_json(serde_json::to_value(&filtered).unwrap()))
     }
 
     /// Send a contact request to the owner(s) of matched persons in other trees.
@@ -695,7 +683,7 @@ impl ClannServer {
             "message": p.message,
         });
 
-        Ok(serde_json::to_string_pretty(&result).unwrap())
+        Ok(to_safe_json(serde_json::to_value(&result).unwrap()))
     }
 }
 
@@ -745,6 +733,41 @@ fn parse_proxy_id(s: &str) -> Result<RecordId, rmcp::ErrorData> {
 
 fn db_err(e: impl std::fmt::Display) -> rmcp::ErrorData {
     rmcp::ErrorData::internal_error(format!("database error: {e}"), None)
+}
+
+/// Fields that must never appear in any MCP response.
+///
+/// Applied as a recursive scrub to every tool output as a defence-in-depth
+/// safety net. The SELECT queries already omit these fields, but this catches
+/// any future query additions or accidental inclusions.
+const SENSITIVE_FIELDS: &[&str] = &[
+    "username", "email", "owner", "from_user", "to_user", "created_by",
+];
+
+/// Recursively remove all sensitive fields from a JSON value.
+pub(crate) fn scrub_pii(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for key in SENSITIVE_FIELDS {
+                map.remove(*key);
+            }
+            for v in map.values_mut() {
+                scrub_pii(v);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                scrub_pii(v);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Serialise a JSON value to a pretty string after scrubbing PII.
+fn to_safe_json(mut value: serde_json::Value) -> String {
+    scrub_pii(&mut value);
+    serde_json::to_string_pretty(&value).unwrap()
 }
 
 /// Extract a 4-digit year from a free-form date string.
