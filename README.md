@@ -321,6 +321,117 @@ Persists AI Research Assistant conversations, scoped per user and family tree. S
 | `GET` | `/api/chat/sessions/{id}/messages` | List messages in order |
 | `POST` | `/api/chat/sessions/{id}/messages` | Append a message (role: `user` or `assistant`) |
 
+## MCP (Model Context Protocol) endpoint
+
+Clann exposes an MCP endpoint at `/mcp` that allows AI assistants (Claude Desktop, Claude Code) to query and act on genealogy data through natural conversation.
+
+### Authentication
+
+The `/mcp` endpoint is protected by OAuth2 (RS256, audience-bound). On first connection the client discovers the Authorization Server automatically via the `WWW-Authenticate` header (RFC 9728) and opens a browser login page. After authenticating, tokens are cached and refreshed silently.
+
+Required environment variables:
+
+| Variable | Description |
+|---|---|
+| `CLANN_MCP_CANONICAL_URI` | Public URL of this server (e.g. `https://clann.example.com`) — used as the OAuth2 audience |
+| `OAUTH2_ISSUER` | Issuer URL of the `ullav-user-management` Authorization Server |
+| `OAUTH2_JWKS_URL` | JWKS endpoint of the Authorization Server |
+
+### Connecting from Claude Code
+
+```bash
+claude mcp add --transport http --scope user clann https://clann.example.com/mcp
+```
+
+### Available tools
+
+| Tool | Description |
+|---|---|
+| `list_trees` | List all family trees owned by a given username |
+| `search_persons` | Search for persons by name across trees |
+| `get_person` | Get full details for a person (birth, death, life events, notes) |
+| `get_family` | Get a person's relationships (parents, children, spouses, siblings) |
+
+**Example interactions:**
+
+```
+"My Clann username is colin. What are the names of my parents?"
+"Search for anyone named Murphy in my trees"
+"Tell me everything you know about person proxy:abc123"
+"Who are the siblings of John Manning?"
+```
+
+For repeated use, add your username and person proxy ID to `~/.claude/CLAUDE.md` so Claude can go straight to `get_family` without a search step each session.
+
+### Privacy principles
+
+The MCP layer enforces the same privacy model as the REST API:
+
+- **No identity leakage before consent.** Tools never expose another tree owner's username, email, or any identifying information. If a potential match is found in another user's tree, only genealogical facts (name, dates) and an opaque person proxy ID are returned — never the owner.
+- **Contact requests are one-way until accepted.** A user can initiate a contact request to the owner of a matched person, but no identity is revealed to either party until the request is accepted through the webapp.
+- **Write tools require confirmation.** Tools that create or modify data describe what they are about to do before acting, giving you the opportunity to adjust or cancel.
+
+### Extending the MCP — a worked example
+
+This section shows how to add new MCP tools by walking through a real feature: finding potential duplicate persons and initiating contact with other tree owners.
+
+#### Step 1 — identify the existing REST endpoints
+
+The REST API already has everything needed:
+
+| Endpoint | What it does |
+|---|---|
+| `GET /api/persons/{id}/find-duplicates` | Returns scored candidate matches across all trees |
+| `POST /api/contact-requests` | Creates a contact request with a tree owner |
+| `GET /api/contact-requests` | Lists the authenticated user's open contact requests |
+
+#### Step 2 — design the MCP tools
+
+Three tools map onto this workflow:
+
+**`find_duplicates(person_id)`**
+Calls `GET /api/persons/{id}/find-duplicates`. Returns a list of candidates with name, birth/death dates, similarity score, and an opaque `person_proxy` ID. The other tree owner's identity is never included.
+
+**`list_contact_requests()`**
+Calls `GET /api/contact-requests`. Returns the authenticated user's open, accepted, and ignored requests — without exposing the other party's identity until the request is accepted.
+
+**`create_contact_request(person_proxy_ids, message)`**
+Calls `POST /api/contact-requests`. Claude composes a suggested message based on the genealogical context (shared name, dates, etc.) and presents it for your review before sending. You can edit the message or cancel entirely.
+
+#### Step 3 — the natural conversation flow
+
+```
+You:   "Find any duplicates that might be me"
+
+Claude: calls find_duplicates(my_person_proxy_id)
+        → "Found 2 possible matches:
+            1. John Manning, b. 1972 Dublin — 84% match
+            2. John Manning, b. 1973 Cork   — 61% match"
+
+You:   "Send a contact request to the 84% match"
+
+Claude: "I'll send this message to the owner of match 1:
+         'Hello, I noticed our family trees may share a person —
+          John Manning born in Dublin around 1972. I'd be happy to
+          compare notes. Would you be open to connecting?'
+         Shall I send it, or would you like to change the wording?"
+
+You:   "Change 'compare notes' to 'share research'"
+
+Claude: calls create_contact_request with the updated message
+        → "Request sent."
+```
+
+#### Step 4 — implement in `src/mcp/server.rs`
+
+Add parameter structs, tool implementations, and register them in `tool_router!` following the same pattern as the existing tools. The REST handlers are already tested — the MCP layer is purely a translation from natural language to structured API calls.
+
+Key points to keep in mind when adding tools:
+
+- Return only what Claude needs to answer the question — omit internal IDs and owner information that isn't relevant to the user.
+- For write tools, include enough context in the return value for Claude to confirm the action back to the user in plain language.
+- The token claims (`username`, `sub`) are validated by the middleware before any tool is called — tools can trust the caller is authenticated.
+
 ## Production deployment
 
 > **macOS:** Uses [Colima](https://github.com/abiosoft/colima) instead of Docker Desktop. Run `colima start` before any Docker commands.
