@@ -303,12 +303,14 @@ impl rmcp::ServerHandler for ClannServer {
 
 // ── Service factory ───────────────────────────────────────────────────────────
 
-pub fn make_mcp_service(db: Db) -> StreamableHttpService<ClannServer, LocalSessionManager> {
+pub fn make_mcp_service(db: Db, canonical_host: String) -> StreamableHttpService<ClannServer, LocalSessionManager> {
     let session_manager = Arc::new(LocalSessionManager::default());
+    let config = StreamableHttpServerConfig::default()
+        .with_allowed_hosts(["localhost", "127.0.0.1", "::1", canonical_host.as_str()]);
     StreamableHttpService::new(
         move || Ok(ClannServer::new(db.clone())),
         session_manager,
-        StreamableHttpServerConfig::default(),
+        config,
     )
 }
 

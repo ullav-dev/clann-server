@@ -234,8 +234,12 @@ pub fn build_router(
         );
 
         let canonical_uri_for_mw = mcp_cfg.canonical_uri.clone();
+        let canonical_host = url::Url::parse(&mcp_cfg.canonical_uri)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned))
+            .unwrap_or_default();
         let mcp_router = Router::new()
-            .route_service("/mcp", crate::mcp::server::make_mcp_service(db.clone()))
+            .route_service("/mcp", crate::mcp::server::make_mcp_service(db.clone(), canonical_host))
             .layer(middleware::from_fn(move |req, next| {
                 let v = mcp_validator.clone();
                 let u = canonical_uri_for_mw.clone();

@@ -644,6 +644,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ullav-mcp-auth",
+ "url",
  "utoipa",
  "wiremock",
 ]
