@@ -1,12 +1,14 @@
 /// Clann MCP server — genealogy tools over Streamable HTTP.
 ///
 /// Auth is validated by the Axum MCP middleware before requests reach this
-/// service, so tools trust the caller is authenticated and operate without
-/// re-validating the token.
+/// service. The validated username from the JWT token is injected via
+/// `AUTHENTICATED_USERNAME` task-local storage so that tools never accept
+/// a username as a parameter — the caller's identity is always bound to
+/// the token, not to a string typed into chat.
 ///
 /// Privacy rule: tools never expose another user's username or identifying
 /// information. Only genealogical facts and opaque proxy IDs cross the
-/// boundary. Identity is revealed only after a contact request is accepted.
+/// boundary.
 
 use std::sync::Arc;
 
@@ -25,13 +27,16 @@ use surrealdb::types::RecordId;
 
 use crate::db::Db;
 
+// Task-local storage for the username extracted from the validated JWT.
+// Set by the MCP auth middleware; read by the ClannServer factory.
+tokio::task_local! {
+    pub(crate) static AUTHENTICATED_USERNAME: String;
+}
+
 // ── Parameter types ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct ListTreesParams {
-    /// Username of the tree owner (e.g. the currently authenticated user's username).
-    pub username: String,
-}
+pub struct ListTreesParams {}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchPersonsParams {
@@ -57,14 +62,10 @@ pub struct GetFamilyParams {
 pub struct FindDuplicatesParams {
     /// Person proxy record ID of the person to search duplicates for.
     pub person_proxy_id: String,
-    /// Username of the authenticated caller — used to identify which matches are in your own trees.
-    pub caller_username: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListContactRequestsParams {
-    /// Username of the authenticated caller.
-    pub username: String,
     /// Optional role filter: `"sent"`, `"received"`, or omit for all.
     pub role: Option<String>,
 }
@@ -83,26 +84,28 @@ pub struct CreateContactRequestParams {
 
 pub struct ClannServer {
     db: Db,
+    /// Username extracted from the validated JWT — never supplied by the caller.
+    username: String,
 }
 
 impl ClannServer {
-    fn new(db: Db) -> Self {
-        Self { db }
+    fn new(db: Db, username: String) -> Self {
+        Self { db, username }
     }
 }
 
 #[tool_router]
 impl ClannServer {
     /// List family trees owned by a given user.
-    #[tool(description = "List family trees owned by a given user")]
+    #[tool(description = "List family trees owned by the authenticated user")]
     async fn list_trees(
         &self,
-        Parameters(p): Parameters<ListTreesParams>,
+        Parameters(_p): Parameters<ListTreesParams>,
     ) -> Result<String, rmcp::ErrorData> {
         let db = self.db.lock().await;
         let rows: Vec<serde_json::Value> = db
             .query("SELECT <string>id AS id, name, display_name, is_primary, team_id FROM family_tree WHERE owner = $username")
-            .bind(("username", p.username))
+            .bind(("username", self.username.clone()))
             .await
             .map_err(db_err)?
             .take(0)
@@ -449,7 +452,7 @@ impl ClannServer {
                     _ => "possible",
                 };
 
-                let is_own = owner == p.caller_username;
+                let is_own = owner == self.username;
 
                 // Owner is used for is_own only — never returned to the caller.
                 Some(serde_json::json!({
@@ -502,7 +505,7 @@ impl ClannServer {
                      WHERE from_user = $user \
                      ORDER BY created_at DESC",
                 )
-                .bind(("user", p.username.clone()))
+                .bind(("user", self.username.clone()))
                 .await
                 .map_err(db_err)?
             }
@@ -514,7 +517,7 @@ impl ClannServer {
                      WHERE to_user = $user \
                      ORDER BY created_at DESC",
                 )
-                .bind(("user", p.username.clone()))
+                .bind(("user", self.username.clone()))
                 .await
                 .map_err(db_err)?
             }
@@ -526,7 +529,7 @@ impl ClannServer {
                      WHERE from_user = $user OR to_user = $user \
                      ORDER BY created_at DESC",
                 )
-                .bind(("user", p.username.clone()))
+                .bind(("user", self.username.clone()))
                 .await
                 .map_err(db_err)?
             }
@@ -540,7 +543,7 @@ impl ClannServer {
             .map(|row| {
                 let status = row.get("status").and_then(|v| v.as_str()).unwrap_or("pending");
                 let from = row.get("from_user").and_then(|v| v.as_str()).unwrap_or("");
-                let direction = if from == p.username { "sent" } else { "received" };
+                let direction = if from == self.username { "sent" } else { "received" };
 
                 serde_json::json!({
                     "id": row.get("id"),
@@ -714,7 +717,12 @@ pub fn make_mcp_service(db: Db, canonical_host: String) -> StreamableHttpService
     let config = StreamableHttpServerConfig::default()
         .with_allowed_hosts(["localhost", "127.0.0.1", "::1", canonical_host.as_str()]);
     StreamableHttpService::new(
-        move || Ok(ClannServer::new(db.clone())),
+        move || {
+            let username = AUTHENTICATED_USERNAME
+                .try_with(|u| u.clone())
+                .unwrap_or_default();
+            Ok(ClannServer::new(db.clone(), username))
+        },
         session_manager,
         config,
     )
