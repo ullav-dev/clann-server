@@ -343,25 +343,57 @@ Required environment variables:
 claude mcp add --transport http --scope user clann https://clann.example.com/mcp
 ```
 
+On first use Claude Code will open a browser tab for the UUM OAuth2 login. Tokens are cached in `~/.claude/` and refreshed silently on subsequent sessions.
+
+### Connecting from Claude Desktop
+
+Claude Desktop does not natively support HTTP MCP transport, so it uses [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) as a local bridge. Add the following to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "clann": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://clann.example.com/mcp",
+        "--transport",
+        "http-only"
+      ]
+    }
+  }
+}
+```
+
+Then fully quit and relaunch Claude Desktop (Claude → Quit Claude from the menu bar). On first use a browser tab opens for the UUM OAuth2 login; tokens are cached in `~/.mcp-auth/` afterwards.
+
+**Why `--transport http-only`?** By default `mcp-remote` uses `http-first`, which makes tool calls via POST and then tries to open a persistent `GET /mcp` SSE stream for server-to-client notifications. The Clann server returns 404 for that GET (rmcp requires an active session ID that the reconnection attempt does not carry), causing `mcp-remote` to disconnect after a few retries. `--transport http-only` skips the SSE stream entirely and uses POST-only, which is correct for Clann since all tools are request/response with no server-initiated events.
+
 ### Available tools
 
 | Tool | Description |
 |---|---|
-| `list_trees` | List all family trees owned by a given username |
-| `search_persons` | Search for persons by name across trees |
+| `list_trees` | List all family trees owned by the authenticated user |
+| `search_persons` | Search for persons by name within a tree |
 | `get_person` | Get full details for a person (birth, death, life events, notes) |
 | `get_family` | Get a person's relationships (parents, children, spouses, siblings) |
+| `find_duplicates` | Find potential duplicate persons across all trees (scored by name, sex, DOB, place) |
+| `list_contact_requests` | List sent/received contact requests with other tree owners |
+| `create_contact_request` | Send a contact request to the owner of a matched person |
 
 **Example interactions:**
 
 ```
-"My Clann username is colin. What are the names of my parents?"
-"Search for anyone named Murphy in my trees"
-"Tell me everything you know about person proxy:abc123"
-"Who are the siblings of John Manning?"
+"List my family trees"
+"Search for anyone named Murphy in my smith-family tree"
+"Tell me everything you know about person_proxy:01jd4xyz"
+"Who are the siblings and children of John Manning?"
+"Find any duplicates that might be me"
+"Send a contact request to the owner of that 84% match"
 ```
 
-For repeated use, add your username and person proxy ID to `~/.claude/CLAUDE.md` so Claude can go straight to `get_family` without a search step each session.
+The authenticated user's identity comes from the OAuth2 token — no username parameter is needed or accepted. Tools automatically scope all queries to the logged-in user.
 
 ### Privacy principles
 

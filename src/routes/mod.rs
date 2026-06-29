@@ -1,11 +1,15 @@
 use axum::{
     extract::{DefaultBodyLimit, Request},
-    http::{header, StatusCode},
+    http::{header, Method, StatusCode},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     routing::{delete, get, patch, post},
     Extension, Json, Router,
 };
+use std::convert::Infallible;
 
 use crate::{
     auth::jwt_middleware,
@@ -44,6 +48,23 @@ pub struct McpConfig {
     pub authorization_server: String,
     /// JWKS URI — included in the protected resource metadata response.
     pub jwks_url: String,
+}
+
+/// Intercepts GET /mcp and returns a persistent SSE keepalive stream.
+///
+/// The MCP SDK's StreamableHTTPClientTransport always opens a GET SSE channel
+/// for server-to-client events after any successful POST. Without this handler
+/// the server returns 404, which triggers a disconnect after 2 mcp-remote
+/// retries. Clann has no server-initiated events, so we hold the connection
+/// open with 15-second keepalive comments and let the client close it.
+async fn mcp_sse_keepalive(req: Request, next: Next) -> Response {
+    if req.method() == Method::GET {
+        let stream = futures_util::stream::pending::<Result<Event, Infallible>>();
+        return Sse::new(stream)
+            .keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15)))
+            .into_response();
+    }
+    next.run(req).await
 }
 
 /// Axum middleware that validates the MCP bearer token (RS256, audience-bound).
@@ -249,6 +270,7 @@ pub fn build_router(
             .unwrap_or_default();
         let mcp_router = Router::new()
             .route_service("/mcp", crate::mcp::server::make_mcp_service(db.clone(), canonical_host))
+            .layer(middleware::from_fn(mcp_sse_keepalive))
             .layer(middleware::from_fn(move |req, next| {
                 let v = mcp_validator.clone();
                 let u = canonical_uri_for_mw.clone();
