@@ -1,8 +1,12 @@
-/// Clann MCP server — read-only genealogy tools over Streamable HTTP.
+/// Clann MCP server — genealogy tools over Streamable HTTP.
 ///
 /// Auth is validated by the Axum MCP middleware before requests reach this
 /// service, so tools trust the caller is authenticated and operate without
 /// re-validating the token.
+///
+/// Privacy rule: tools never expose another user's username or identifying
+/// information. Only genealogical facts and opaque proxy IDs cross the
+/// boundary. Identity is revealed only after a contact request is accepted.
 
 use std::sync::Arc;
 
@@ -47,6 +51,32 @@ pub struct GetPersonParams {
 pub struct GetFamilyParams {
     /// Person proxy record ID — either the full `person_proxy:<id>` form or just the `<id>` part.
     pub person_proxy_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FindDuplicatesParams {
+    /// Person proxy record ID of the person to search duplicates for.
+    pub person_proxy_id: String,
+    /// Username of the authenticated caller — used to identify which matches are in your own trees.
+    pub caller_username: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListContactRequestsParams {
+    /// Username of the authenticated caller.
+    pub username: String,
+    /// Optional role filter: `"sent"`, `"received"`, or omit for all.
+    pub role: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateContactRequestParams {
+    /// Proxy ID of the person in your own tree (e.g. `person_proxy:<ulid>`).
+    pub from_proxy_id: String,
+    /// Proxy IDs of the matched persons in other trees to contact (from `find_duplicates`).
+    pub target_proxy_ids: Vec<String>,
+    /// Opening message to send. Claude will suggest one, but it can be edited before sending.
+    pub message: String,
 }
 
 // ── Server ────────────────────────────────────────────────────────────────────
@@ -283,6 +313,390 @@ impl ClannServer {
 
         Ok(serde_json::to_string_pretty(&result).unwrap())
     }
+
+    /// Find potential duplicate persons across all family trees.
+    ///
+    /// Matches by exact name, then scores by sex, birth year, and place of birth.
+    /// Owner identity is never included — use `create_contact_request` with the
+    /// returned `proxy_id` values to reach out to the owner of a match.
+    ///
+    /// `is_own: true` means the match is in one of your own trees — no contact
+    /// request is needed; you can merge directly in the app.
+    #[tool(
+        description = "Find potential duplicate persons for a given person proxy. \
+                       Returns scored candidates. Owner identity is never revealed — \
+                       use the proxy_id with create_contact_request to initiate contact."
+    )]
+    async fn find_duplicates(
+        &self,
+        Parameters(p): Parameters<FindDuplicatesParams>,
+    ) -> Result<String, rmcp::ErrorData> {
+        let proxy_rid = parse_proxy_id(&p.person_proxy_id)?;
+        let db = self.db.lock().await;
+
+        // Fetch the source proxy and its canonical person.
+        let proxy: Option<serde_json::Value> = db
+            .query(
+                "SELECT \
+                    <string>person_id AS canonical_id, \
+                    created_by, \
+                    person_id.first_name AS first_name, \
+                    person_id.family_name AS family_name, \
+                    person_id.sex AS sex, \
+                    person_id.date_of_birth AS dob, \
+                    person_id.place_of_birth AS pob \
+                 FROM person_proxy WHERE id = $id LIMIT 1",
+            )
+            .bind(("id", proxy_rid.clone()))
+            .await
+            .map_err(db_err)?
+            .take(0)
+            .map_err(db_err)?;
+
+        let proxy = proxy.ok_or_else(|| {
+            rmcp::ErrorData::invalid_params(
+                format!("person_proxy '{}' not found", p.person_proxy_id),
+                None,
+            )
+        })?;
+
+        let canonical_id = proxy.get("canonical_id").and_then(|v| v.as_str()).unwrap_or("");
+        let first_name = proxy.get("first_name").and_then(|v| v.as_str()).unwrap_or("");
+        let family_name = proxy.get("family_name").and_then(|v| v.as_str()).unwrap_or("");
+        let my_sex = proxy.get("sex").and_then(|v| v.as_str()).unwrap_or("");
+        let my_dob = proxy.get("dob").and_then(|v| v.as_str());
+        let my_pob = proxy.get("pob").and_then(|v| v.as_str());
+
+        if first_name.is_empty() || family_name.is_empty() {
+            return Ok(serde_json::to_string_pretty(&serde_json::json!({ "count": 0, "matches": [] })).unwrap());
+        }
+
+        // Find all proxies with the same name pointing to a different canonical person.
+        let rows: Vec<serde_json::Value> = db
+            .query(
+                "SELECT \
+                    <string>id AS proxy_id, \
+                    created_by, \
+                    person_id.sex AS sex, \
+                    person_id.date_of_birth AS dob, \
+                    person_id.place_of_birth AS pob \
+                 FROM person_proxy \
+                 WHERE string::lowercase(person_id.family_name) = string::lowercase($family_name) \
+                   AND string::lowercase(person_id.first_name) = string::lowercase($first_name) \
+                   AND <string>person_id != $canonical_id \
+                   AND id != $self_id",
+            )
+            .bind(("family_name", family_name))
+            .bind(("first_name", first_name))
+            .bind(("canonical_id", canonical_id))
+            .bind(("self_id", proxy_rid))
+            .await
+            .map_err(db_err)?
+            .take(0)
+            .map_err(db_err)?;
+
+        let my_dob_year = my_dob.and_then(mcp_extract_year);
+        let my_pob_lc = my_pob.map(|s| s.to_lowercase());
+
+        let mut matches: Vec<serde_json::Value> = rows
+            .into_iter()
+            .filter_map(|row| {
+                let proxy_id = row.get("proxy_id").and_then(|v| v.as_str())?.to_string();
+                let owner = row.get("created_by").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let cand_sex = row.get("sex").and_then(|v| v.as_str()).map(str::to_string);
+                let cand_dob = row.get("dob").and_then(|v| v.as_str()).map(str::to_string);
+                let cand_pob = row.get("pob").and_then(|v| v.as_str()).map(str::to_string);
+
+                // Sex mismatch is a hard disqualifier.
+                let mut score: i32 = 0;
+                if let Some(cs) = cand_sex.as_deref() {
+                    if !my_sex.is_empty() {
+                        if cs == my_sex {
+                            score += 3;
+                        } else {
+                            return None;
+                        }
+                    }
+                }
+
+                // Birth year: fuzzy match.
+                if let (Some(my_y), Some(cand_str)) = (my_dob_year, cand_dob.as_deref()) {
+                    if let Some(cy) = mcp_extract_year(cand_str) {
+                        if my_y == cy {
+                            score += 2;
+                        } else if my_y.abs_diff(cy) == 1 {
+                            score += 1;
+                        }
+                    }
+                }
+
+                // Place of birth: substring or shared-word containment.
+                if let (Some(ref my_p), Some(cand_str)) = (&my_pob_lc, cand_pob.as_deref()) {
+                    let cp = cand_str.to_lowercase();
+                    if *my_p == cp {
+                        score += 3;
+                    } else if my_p.contains(&cp) || cp.contains(my_p.as_str()) {
+                        score += 2;
+                    } else if mcp_shares_significant_word(my_p, &cp) {
+                        score += 1;
+                    }
+                }
+
+                let score = score as u32;
+                let confidence = match score {
+                    s if s >= 4 => "strong",
+                    s if s >= 2 => "likely",
+                    _ => "possible",
+                };
+
+                let is_own = owner == p.caller_username;
+
+                // Owner is used for is_own only — never returned to the caller.
+                Some(serde_json::json!({
+                    "proxy_id": proxy_id,
+                    "family_name": family_name,
+                    "first_name": first_name,
+                    "sex": cand_sex,
+                    "date_of_birth": cand_dob,
+                    "place_of_birth": cand_pob,
+                    "score": score,
+                    "confidence": confidence,
+                    "is_own": is_own,
+                }))
+            })
+            .collect();
+
+        matches.sort_by(|a, b| {
+            b.get("score").and_then(|v| v.as_u64()).unwrap_or(0)
+                .cmp(&a.get("score").and_then(|v| v.as_u64()).unwrap_or(0))
+        });
+
+        let result = serde_json::json!({
+            "count": matches.len(),
+            "matches": matches,
+        });
+
+        Ok(serde_json::to_string_pretty(&result).unwrap())
+    }
+
+    /// List your contact requests (sent and/or received).
+    ///
+    /// The other party's identity is masked while a request is `pending` or `ignored`.
+    /// Once a request is `accepted`, both parties can see each other's identity.
+    #[tool(
+        description = "List your contact requests with other tree owners. \
+                       Identity of the other party is hidden until the request is accepted."
+    )]
+    async fn list_contact_requests(
+        &self,
+        Parameters(p): Parameters<ListContactRequestsParams>,
+    ) -> Result<String, rmcp::ErrorData> {
+        let db = self.db.lock().await;
+
+        let mut query = match p.role.as_deref() {
+            Some("sent") => {
+                db.query(
+                    "SELECT <string>id AS id, from_user, to_user, status, \
+                            initial_message, created_at, updated_at \
+                     FROM merge_contact_request \
+                     WHERE from_user = $user \
+                     ORDER BY created_at DESC",
+                )
+                .bind(("user", p.username.clone()))
+                .await
+                .map_err(db_err)?
+            }
+            Some("received") => {
+                db.query(
+                    "SELECT <string>id AS id, from_user, to_user, status, \
+                            initial_message, created_at, updated_at \
+                     FROM merge_contact_request \
+                     WHERE to_user = $user \
+                     ORDER BY created_at DESC",
+                )
+                .bind(("user", p.username.clone()))
+                .await
+                .map_err(db_err)?
+            }
+            _ => {
+                db.query(
+                    "SELECT <string>id AS id, from_user, to_user, status, \
+                            initial_message, created_at, updated_at \
+                     FROM merge_contact_request \
+                     WHERE from_user = $user OR to_user = $user \
+                     ORDER BY created_at DESC",
+                )
+                .bind(("user", p.username.clone()))
+                .await
+                .map_err(db_err)?
+            }
+        };
+
+        let rows: Vec<serde_json::Value> = query.take(0).map_err(db_err)?;
+
+        // Apply privacy filter: mask the other party's username until accepted.
+        let filtered: Vec<serde_json::Value> = rows
+            .into_iter()
+            .map(|row| {
+                let status = row.get("status").and_then(|v| v.as_str()).unwrap_or("pending");
+                let from = row.get("from_user").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let to = row.get("to_user").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let accepted = status == "accepted";
+
+                let (display_from, display_to) = if accepted {
+                    (from, to)
+                } else if from == p.username {
+                    // Sent by us — mask the recipient
+                    (from, "(pending — identity protected)".to_string())
+                } else {
+                    // Received by us — mask the sender
+                    ("(pending — identity protected)".to_string(), to)
+                };
+
+                serde_json::json!({
+                    "id": row.get("id"),
+                    "from_user": display_from,
+                    "to_user": display_to,
+                    "status": status,
+                    "initial_message": row.get("initial_message"),
+                    "created_at": row.get("created_at"),
+                    "updated_at": row.get("updated_at"),
+                })
+            })
+            .collect();
+
+        Ok(serde_json::to_string_pretty(&filtered).unwrap())
+    }
+
+    /// Send a contact request to the owner(s) of matched persons in other trees.
+    ///
+    /// Pass the `proxy_id` values from `find_duplicates` as `target_proxy_ids`.
+    /// The server looks up the owner of each proxy internally — their username is
+    /// never exposed to this tool. Claude will suggest a message based on the
+    /// genealogical context; the user should confirm or edit it before calling this tool.
+    ///
+    /// Skips: self-contact, already-pending requests for the same proxy + recipient.
+    /// Only pass proxies where `is_own` is false.
+    #[tool(
+        description = "Send a contact request to the owner(s) of matched persons from find_duplicates. \
+                       Pass target_proxy_ids from find_duplicates results. \
+                       ALWAYS show the user the message and get confirmation before calling this tool."
+    )]
+    async fn create_contact_request(
+        &self,
+        Parameters(p): Parameters<CreateContactRequestParams>,
+    ) -> Result<String, rmcp::ErrorData> {
+        let from_rid = parse_proxy_id(&p.from_proxy_id)?;
+        let db = self.db.lock().await;
+
+        // Look up the caller's proxy to get their username.
+        let from_proxy: Option<serde_json::Value> = db
+            .query(
+                "SELECT created_by FROM person_proxy WHERE id = $id LIMIT 1",
+            )
+            .bind(("id", from_rid.clone()))
+            .await
+            .map_err(db_err)?
+            .take(0)
+            .map_err(db_err)?;
+
+        let from_proxy = from_proxy.ok_or_else(|| {
+            rmcp::ErrorData::invalid_params(
+                format!("from_proxy_id '{}' not found", p.from_proxy_id),
+                None,
+            )
+        })?;
+        let caller = from_proxy
+            .get("created_by")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let mut sent = 0u32;
+        let mut skipped = 0u32;
+
+        for target_proxy_id_str in &p.target_proxy_ids {
+            let target_rid = parse_proxy_id(target_proxy_id_str)?;
+
+            // Look up the owner of the target proxy — never returned to the caller.
+            let target_proxy: Option<serde_json::Value> = db
+                .query(
+                    "SELECT created_by FROM person_proxy WHERE id = $id LIMIT 1",
+                )
+                .bind(("id", target_rid.clone()))
+                .await
+                .map_err(db_err)?
+                .take(0)
+                .map_err(db_err)?;
+
+            let target_owner = match target_proxy
+                .as_ref()
+                .and_then(|v| v.get("created_by"))
+                .and_then(|v| v.as_str())
+            {
+                Some(o) => o.to_string(),
+                None => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+
+            // Skip self-contact.
+            if target_owner == caller {
+                skipped += 1;
+                continue;
+            }
+
+            // Skip if there is already a pending request for this proxy + recipient.
+            let existing: Option<serde_json::Value> = db
+                .query(
+                    "SELECT id FROM merge_contact_request \
+                     WHERE status = 'pending' \
+                       AND from_proxy_id = $proxy \
+                       AND to_user = $to \
+                     LIMIT 1",
+                )
+                .bind(("proxy", from_rid.clone()))
+                .bind(("to", target_owner.clone()))
+                .await
+                .map_err(db_err)?
+                .take(0)
+                .map_err(db_err)?;
+
+            if existing.is_some() {
+                skipped += 1;
+                continue;
+            }
+
+            db.query(
+                "CREATE merge_contact_request SET \
+                 from_proxy_id = $proxy, \
+                 from_user = $from, \
+                 to_user = $to, \
+                 initial_message = $msg, \
+                 status = 'pending', \
+                 messages = [], \
+                 created_at = time::now(), \
+                 updated_at = time::now()",
+            )
+            .bind(("proxy", from_rid.clone()))
+            .bind(("from", caller.clone()))
+            .bind(("to", target_owner))
+            .bind(("msg", p.message.clone()))
+            .await
+            .map_err(db_err)?;
+
+            sent += 1;
+        }
+
+        let result = serde_json::json!({
+            "sent": sent,
+            "skipped": skipped,
+            "message": p.message,
+        });
+
+        Ok(serde_json::to_string_pretty(&result).unwrap())
+    }
 }
 
 #[tool_handler]
@@ -294,9 +708,13 @@ impl rmcp::ServerHandler for ClannServer {
                 .build(),
         )
         .with_instructions(
-            "Clann MCP server — read-only genealogy tools. \
-             Use these tools to explore family trees, search for persons, \
-             and navigate family relationships.",
+            "Clann genealogy MCP server. \
+             Use these tools to explore family trees, find persons, navigate \
+             relationships, discover potential duplicates, and send contact \
+             requests to other tree owners. \
+             Privacy rule: never reveal another user's identity before a contact \
+             request is accepted. Always show the user proposed messages and get \
+             explicit confirmation before calling create_contact_request.",
         )
     }
 }
@@ -327,4 +745,30 @@ fn parse_proxy_id(s: &str) -> Result<RecordId, rmcp::ErrorData> {
 
 fn db_err(e: impl std::fmt::Display) -> rmcp::ErrorData {
     rmcp::ErrorData::internal_error(format!("database error: {e}"), None)
+}
+
+/// Extract a 4-digit year from a free-form date string.
+fn mcp_extract_year(s: &str) -> Option<u32> {
+    let bytes = s.as_bytes();
+    for i in 0..bytes.len().saturating_sub(3) {
+        if bytes[i..i + 4].iter().all(|b| b.is_ascii_digit()) {
+            if let Ok(y) = s[i..i + 4].parse::<u32>() {
+                if (1700..=2099).contains(&y) {
+                    return Some(y);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// True when two lowercased place strings share at least one word longer than 3 chars.
+fn mcp_shares_significant_word(a: &str, b: &str) -> bool {
+    let words_b: std::collections::HashSet<&str> = b
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|w| w.len() > 3)
+        .collect();
+    a.split(|c: char| !c.is_alphabetic())
+        .filter(|w| w.len() > 3)
+        .any(|w| words_b.contains(w))
 }
