@@ -630,6 +630,7 @@ version = "26.3.0"
 dependencies = [
  "anyhow",
  "axum",
+ "futures-util",
  "http-body-util",
  "jsonwebtoken",
  "rmcp",
