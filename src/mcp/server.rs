@@ -56,6 +56,10 @@ pub struct GetPersonParams {
 pub struct GetFamilyParams {
     /// Person proxy record ID — either the full `person_proxy:<id>` form or just the `<id>` part.
     pub person_proxy_id: String,
+    /// If true, also return this person's siblings (others sharing at least one parent).
+    /// Defaults to false.
+    #[serde(default)]
+    pub include_siblings: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -206,12 +210,17 @@ impl ClannServer {
         }
     }
 
-    /// Get the immediate family of a person: parents, siblings, spouse(s), and children.
+    /// Get the immediate family of a person: parents, spouse(s), and children, plus
+    /// siblings when `include_siblings` is true.
     ///
     /// Returns separate lists for fathers, mothers, spouses, and children. Each entry
-    /// includes `person_proxy_id`, `first_name`, and `family_name`.
+    /// includes `person_proxy_id`, `first_name`, and `family_name`. When
+    /// `include_siblings` is set, a `siblings` list is also included (persons who
+    /// share at least one parent with this person).
     #[tool(
-        description = "Get immediate family (parents, siblings, spouses, children) of a person"
+        description = "Get immediate family (parents, spouses, children) of a person. \
+                       Set include_siblings to true to also return siblings (persons \
+                       sharing at least one parent)."
     )]
     async fn get_family(
         &self,
@@ -307,12 +316,50 @@ impl ClannServer {
             }
         }
 
-        let result = serde_json::json!({
+        let mut result = serde_json::json!({
             "fathers": fathers,
             "mothers": mothers,
             "spouses": spouses,
             "children": children,
         });
+
+        if p.include_siblings {
+            let mut siblings: Vec<serde_json::Value> = Vec::new();
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+            for parent in fathers.iter().chain(mothers.iter()) {
+                let Some(parent_id) = parent.get("person_proxy_id").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let parent_rid = parse_proxy_id(parent_id)?;
+                let is_father = fathers.iter().any(|f| f.get("person_proxy_id").and_then(|v| v.as_str()) == Some(parent_id));
+                let edge = if is_father { "has_father" } else { "has_mother" };
+
+                let rows: Vec<serde_json::Value> = db
+                    .query(format!(
+                        "SELECT \
+                            <string>in AS person_proxy_id, \
+                            in.preferred_first_name ?? in.person_id.first_name AS first_name, \
+                            in.preferred_family_name ?? in.person_id.family_name AS family_name \
+                         FROM {edge} WHERE out = $parent_id AND in != $id"
+                    ))
+                    .bind(("parent_id", parent_rid))
+                    .bind(("id", proxy_rid.clone()))
+                    .await
+                    .map_err(db_err)?
+                    .take(0)
+                    .map_err(db_err)?;
+
+                for row in rows {
+                    let pid = row.get("person_proxy_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    if !pid.is_empty() && seen.insert(pid) {
+                        siblings.push(row);
+                    }
+                }
+            }
+
+            result["siblings"] = serde_json::Value::Array(siblings);
+        }
 
         Ok(to_safe_json(serde_json::to_value(&result).unwrap()))
     }
