@@ -377,7 +377,7 @@ Then fully quit and relaunch Claude Desktop (Claude → Quit Claude from the men
 | `list_trees` | List all family trees owned by the authenticated user |
 | `search_persons` | Search for persons by name within a tree |
 | `get_person` | Get full details for a person (birth, death, life events, notes) |
-| `get_family` | Get a person's relationships (parents, children, spouses, siblings) |
+| `get_family` | Get a person's relationships (parents, children, spouses; siblings with `include_siblings`) |
 | `find_duplicates` | Find potential duplicate persons across all trees (scored by name, sex, DOB, place) |
 | `list_contact_requests` | List sent/received contact requests with other tree owners |
 | `create_contact_request` | Send a contact request to the owner of a matched person |
