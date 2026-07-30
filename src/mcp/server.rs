@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use rmcp::{
     handler::server::wrapper::Parameters,
-    model::{ServerCapabilities, ServerInfo},
+    model::{CallToolResult, ServerCapabilities, ServerInfo},
     tool, tool_handler, tool_router,
 };
 use rmcp::transport::streamable_http_server::{
@@ -105,7 +105,7 @@ impl ClannServer {
     async fn list_trees(
         &self,
         Parameters(_p): Parameters<ListTreesParams>,
-    ) -> Result<String, rmcp::ErrorData> {
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         let db = self.db.lock().await;
         let rows: Vec<serde_json::Value> = db
             .query("SELECT <string>id AS id, name, display_name, is_primary, team_id FROM family_tree WHERE owner = $username")
@@ -128,7 +128,7 @@ impl ClannServer {
     async fn search_persons(
         &self,
         Parameters(p): Parameters<SearchPersonsParams>,
-    ) -> Result<String, rmcp::ErrorData> {
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         let db = self.db.lock().await;
         // Fetch all proxies in the tree then filter in Rust; SurrealDB embedded
         // engine does not support string::lowercase() with the ?? operator in the
@@ -171,7 +171,7 @@ impl ClannServer {
     async fn get_person(
         &self,
         Parameters(p): Parameters<GetPersonParams>,
-    ) -> Result<String, rmcp::ErrorData> {
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         let proxy_rid = parse_proxy_id(&p.person_proxy_id)?;
         let db = self.db.lock().await;
 
@@ -225,7 +225,7 @@ impl ClannServer {
     async fn get_family(
         &self,
         Parameters(p): Parameters<GetFamilyParams>,
-    ) -> Result<String, rmcp::ErrorData> {
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         let proxy_rid = parse_proxy_id(&p.person_proxy_id)?;
         let db = self.db.lock().await;
 
@@ -380,7 +380,7 @@ impl ClannServer {
     async fn find_duplicates(
         &self,
         Parameters(p): Parameters<FindDuplicatesParams>,
-    ) -> Result<String, rmcp::ErrorData> {
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         let proxy_rid = parse_proxy_id(&p.person_proxy_id)?;
         let db = self.db.lock().await;
 
@@ -540,7 +540,7 @@ impl ClannServer {
     async fn list_contact_requests(
         &self,
         Parameters(p): Parameters<ListContactRequestsParams>,
-    ) -> Result<String, rmcp::ErrorData> {
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         let db = self.db.lock().await;
 
         let mut query = match p.role.as_deref() {
@@ -623,7 +623,7 @@ impl ClannServer {
     async fn create_contact_request(
         &self,
         Parameters(p): Parameters<CreateContactRequestParams>,
-    ) -> Result<String, rmcp::ErrorData> {
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         let from_rid = parse_proxy_id(&p.from_proxy_id)?;
         let db = self.db.lock().await;
 
@@ -820,9 +820,15 @@ pub(crate) fn scrub_pii(value: &mut serde_json::Value) {
 }
 
 /// Serialise a JSON value to a pretty string after scrubbing PII.
-fn to_safe_json(mut value: serde_json::Value) -> String {
+/// Serializes a scrubbed (PII-safe) value to a tool result carrying both
+/// pretty-printed text (for chat/LLM callers, unchanged from before) and the
+/// same *scrubbed* value as `structured_content` — critically, scrubbing
+/// happens once here and both representations are built from the result, so
+/// structured_content can never leak PII the text output redacts.
+fn to_safe_json(mut value: serde_json::Value) -> CallToolResult {
     scrub_pii(&mut value);
-    serde_json::to_string_pretty(&value).unwrap()
+    let text = serde_json::to_string_pretty(&value).unwrap();
+    super::text_result(text, value)
 }
 
 /// Extract a 4-digit year from a free-form date string.
