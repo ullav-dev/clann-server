@@ -7,3 +7,4 @@ pub mod mcp;
 pub mod models;
 pub mod openapi;
 pub mod routes;
+pub mod tack_client;

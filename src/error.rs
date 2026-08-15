@@ -37,6 +37,16 @@ pub enum AppError {
     /// 409 Conflict — body is a free-form JSON payload (e.g. merge conflict details).
     #[error("Conflict")]
     Conflict(serde_json::Value),
+
+    /// tack-server rejected the request outright (its own 4xx) -- surfaced
+    /// with tack's own status/message rather than flattened to a generic
+    /// 500, since callers will actually hit real cases like "team has no
+    /// organization assigned" (400) in practice. See `tack_client.rs`.
+    #[error("tack-server rejected the request: {1}")]
+    TackUpstream(u16, String),
+
+    #[error("tack-server unreachable: {0}")]
+    TackUnreachable(String),
 }
 
 impl IntoResponse for AppError {
@@ -53,6 +63,11 @@ impl IntoResponse for AppError {
                     AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
                     AppError::InvalidRelType(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
                     AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+                    AppError::TackUpstream(code, msg) => (
+                        StatusCode::from_u16(*code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                        msg.clone(),
+                    ),
+                    AppError::TackUnreachable(msg) => (StatusCode::BAD_GATEWAY, msg.clone()),
                     AppError::Conflict(_) => unreachable!(),
                 };
                 (status, Json(json!({ "error": message }))).into_response()
