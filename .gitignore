@@ -28,3 +28,6 @@ secrets/
 
 migration_preflight_*.json
 migration_result_*.json
+tack_dryrun_report_*.json
+tack_backfill_report_*.json
+tack_reverse_drain_*.json

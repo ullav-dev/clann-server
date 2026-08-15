@@ -138,6 +138,46 @@ pub async fn resolve_usernames(
     report
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct AdminUserById {
+    username: String,
+}
+
+/// The reverse of `resolve_usernames` -- UUM UUID -> username, via
+/// `GET /admin/users/{id}` (a single exact lookup, no substring-match
+/// ambiguity to filter, unlike the forward direction). Used by the
+/// reverse-drain tool (`src/bin/tack_reverse_drain.rs`) to convert a tack
+/// note's UUID-typed `created_by` back into the username
+/// `research_note.created_by` expects.
+pub async fn resolve_usernames_for_uuids(
+    http: &reqwest::Client,
+    uum_base: &str,
+    uum_token: &str,
+    user_ids: &HashSet<Uuid>,
+) -> ResolutionReport<String> {
+    let mut report = ResolutionReport::default();
+
+    for user_id in user_ids {
+        let key = user_id.to_string();
+        let resp = http.get(format!("{uum_base}/admin/users/{user_id}")).bearer_auth(uum_token).send().await;
+
+        match resp {
+            Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => {
+                report.skip(key, SkipReason::UnresolvableUsername);
+            }
+            Ok(r) if r.status().is_success() => match r.json::<AdminUserById>().await {
+                Ok(u) => {
+                    report.resolved.insert(key, u.username);
+                }
+                Err(_) => report.skip(key, SkipReason::LookupFailed),
+            },
+            _ => report.skip(key, SkipReason::LookupFailed),
+        }
+    }
+
+    report
+}
+
 // ── Team -> organization UUID ────────────────────────────────────────────────
 
 #[derive(Debug, serde::Deserialize)]
@@ -313,6 +353,31 @@ mod tests {
 
         assert!(report.resolved.is_empty());
         assert_eq!(report.skipped[0].reason, SkipReason::AmbiguousUsername);
+    }
+
+    #[tokio::test]
+    async fn resolve_usernames_for_uuids_round_trips_and_flags_deleted() {
+        let server = MockServer::start().await;
+        let known = "11111111-1111-1111-1111-111111111111";
+        let deleted = "22222222-2222-2222-2222-222222222222";
+
+        Mock::given(method("GET"))
+            .and(path(format!("/admin/users/{known}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "username": "colin" })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/admin/users/{deleted}")))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let http = reqwest::Client::new();
+        let ids: HashSet<Uuid> = [known, deleted].into_iter().map(|s| Uuid::parse_str(s).unwrap()).collect();
+        let report = resolve_usernames_for_uuids(&http, &server.uri(), "tok", &ids).await;
+
+        assert_eq!(report.resolved.get(known).unwrap(), "colin");
+        assert_eq!(report.skipped.iter().find(|s| s.key == deleted).unwrap().reason, SkipReason::UnresolvableUsername);
     }
 
     #[tokio::test]
