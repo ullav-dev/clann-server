@@ -366,30 +366,32 @@ impl TackClient {
         resp.json().await.map_err(|e| AppError::TackUnreachable(e.to_string()))
     }
 
-    /// `created_by`/`created_at` overrides, backfill-only (same caveat as
-    /// `create_note`).
-    pub async fn create_note_folder(
-        &self,
-        auth: &str,
-        team_id: Uuid,
-        name: &str,
-        created_by: Option<Uuid>,
-        created_at: Option<DateTime<Utc>>,
-    ) -> Result<TackNoteFolder, AppError> {
+    /// NO `created_by`/`created_at` override, unlike `create_note`/
+    /// `create_reply` -- verified directly against tack-server's own
+    /// `CreateNoteFolderRequest` (`models/note.rs`), which carries only
+    /// `team_id`/`name`/`attach`. A folder migrated by the backfill is
+    /// therefore always attributed to the backfill's own admin caller and
+    /// stamped with the run's real timestamp, not `research_folder`'s
+    /// original `created_by`/`created_at` -- an earlier draft of this
+    /// method sent both anyway, which tack-server's non-`deny_unknown_
+    /// fields` Deserialize would have silently swallowed rather than
+    /// erroring on, exactly the kind of invisible-authorship-loss bug the
+    /// migration plan's own verification section exists to catch. Accepted
+    /// as a low-stakes gap for now: no `@ullav-dev/tack-notes` component
+    /// surfaces a folder's own creator/date anywhere in its UI (only name
+    /// and note count) -- see the plan's backfill design section before
+    /// treating this as settled if that ever changes.
+    pub async fn create_note_folder(&self, auth: &str, team_id: Uuid, name: &str) -> Result<TackNoteFolder, AppError> {
         #[derive(Serialize)]
         struct Body<'a> {
             team_id: Uuid,
             name: &'a str,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            created_by: Option<Uuid>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            created_at: Option<DateTime<Utc>>,
         }
         let resp = self
             .http
             .post(self.url("/note-folders"))
             .header(reqwest::header::AUTHORIZATION, auth)
-            .json(&Body { team_id, name, created_by, created_at })
+            .json(&Body { team_id, name })
             .send()
             .await
             .map_err(|e| AppError::TackUnreachable(e.to_string()))?;
