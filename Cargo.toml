@@ -14,7 +14,7 @@ anyhow = "1"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-utoipa = { version = "5", features = ["axum_extras"] }
+utoipa = { version = "5", features = ["axum_extras", "uuid"] }
 ullav-mcp-auth = { git = "https://github.com/ullav-dev/ullav-mcp-auth", default-features = false }
 url = "2"
 rmcp = { version = "1.7.0", features = ["server", "transport-streamable-http-server", "transport-streamable-http-server-session", "macros"] }

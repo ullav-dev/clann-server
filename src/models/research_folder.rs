@@ -23,7 +23,12 @@ pub struct ResearchFolder {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateResearchFolder {
     pub name: String,
-    pub created_by: String,
+    // No `created_by` field, unlike the old request shape -- that let a
+    // caller attribute a folder to any username with zero validation, same
+    // gap `CreateResearchNote` had (see that model's own doc comment).
+    // Always the authenticated caller (`ClannAuth::username` -- this
+    // registry stays username-keyed, never unified with tack's UUID-keyed
+    // `created_by` elsewhere in this API).
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

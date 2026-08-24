@@ -137,12 +137,19 @@ async fn setup_with_auth() -> (axum::Router, Db, MockServer) {
     );
 
     let db: Db = Arc::new(Mutex::new(conn));
+    // Unreachable base URL -- these integration tests don't exercise the
+    // notes/folders endpoints (see notes_acl.rs's own test convention in
+    // tack-server for the same "unreachable proves no accidental network
+    // call" reasoning), so any real tack_client call here should fail loud,
+    // not hang.
+    let tack_client = clann_server::tack_client::TackClient::new(reqwest::Client::new(), "http://127.0.0.1:1".to_string());
     let router = build_router(
         db.clone(),
         std::env::temp_dir().to_string_lossy().into_owned(),
         true,
         Some(validator),
         None, // MCP disabled in tests
+        tack_client,
     );
     (router, db, mock_server)
 }
@@ -194,7 +201,8 @@ async fn setup() -> axum::Router {
     .unwrap();
 
     let db: Db = Arc::new(Mutex::new(conn));
-    build_router(db, std::env::temp_dir().to_string_lossy().into_owned(), true, None, None)
+    let tack_client = clann_server::tack_client::TackClient::new(reqwest::Client::new(), "http://127.0.0.1:1".to_string());
+    build_router(db, std::env::temp_dir().to_string_lossy().into_owned(), true, None, None, tack_client)
 }
 
 async fn response_json(response: axum::response::Response) -> Value {
@@ -2017,260 +2025,24 @@ async fn test_delete_nonexistent_life_event_returns_404() {
 }
 
 // ── Research Notes ────────────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn test_create_research_note_returns_201() {
-    let app = setup().await;
-    let response = app
-        .oneshot(post_json(
-            "/api/notes",
-            json!({
-                "title": "Clann na Gael",
-                "description": "Notes on the O'Brien family",
-                "trees": [TEST_TREE],
-                "created_by": "researcher",
-            }),
-        ))
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::CREATED);
-    let body = response_json(response).await;
-    assert_eq!(body["title"], "Clann na Gael");
-    assert_eq!(body["description"], "Notes on the O'Brien family");
-    assert!(!body["id"].is_null());
-}
-
-#[tokio::test]
-async fn test_list_research_notes_empty() {
-    let app = setup().await;
-    let response = app.oneshot(get("/api/notes")).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response_json(response).await;
-    assert_eq!(body, json!([]));
-}
-
-#[tokio::test]
-async fn test_list_research_notes_filter_by_tree() {
-    let app = setup().await;
-
-    app.clone()
-        .oneshot(post_json(
-            "/api/trees",
-            json!({"name": "other-note-tree", "display_name": "Other", "owner": "user"}),
-        ))
-        .await
-        .unwrap();
-
-    app.clone()
-        .oneshot(post_json(
-            "/api/notes",
-            json!({"title": "Note A", "trees": [TEST_TREE]}),
-        ))
-        .await
-        .unwrap();
-    app.clone()
-        .oneshot(post_json(
-            "/api/notes",
-            json!({"title": "Note B", "trees": ["other-note-tree"]}),
-        ))
-        .await
-        .unwrap();
-
-    let response = app
-        .oneshot(get(&format!("/api/notes?tree={}", TEST_TREE)))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response_json(response).await;
-    let notes = body.as_array().unwrap();
-    assert_eq!(notes.len(), 1);
-    assert_eq!(notes[0]["title"], "Note A");
-}
-
-#[tokio::test]
-async fn test_list_research_notes_filter_by_created_by() {
-    let app = setup().await;
-
-    app.clone()
-        .oneshot(post_json(
-            "/api/notes",
-            json!({"title": "Alice Note", "trees": [TEST_TREE], "created_by": "alice"}),
-        ))
-        .await
-        .unwrap();
-    app.clone()
-        .oneshot(post_json(
-            "/api/notes",
-            json!({"title": "Bob Note", "trees": [TEST_TREE], "created_by": "bob"}),
-        ))
-        .await
-        .unwrap();
-
-    let response = app
-        .oneshot(get("/api/notes?created_by=alice"))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response_json(response).await;
-    let notes = body.as_array().unwrap();
-    assert_eq!(notes.len(), 1);
-    assert_eq!(notes[0]["title"], "Alice Note");
-}
-
-#[tokio::test]
-async fn test_get_research_note_by_id() {
-    let app = setup().await;
-
-    let create_resp = app
-        .clone()
-        .oneshot(post_json(
-            "/api/notes",
-            json!({"title": "Census 1911", "body": "Found in Roscommon", "trees": [TEST_TREE]}),
-        ))
-        .await
-        .unwrap();
-    let created = response_json(create_resp).await;
-    let note_id = record_id(&created);
-
-    let response = app
-        .oneshot(get(&format!("/api/notes/{}", note_id)))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response_json(response).await;
-    assert_eq!(body["title"], "Census 1911");
-    assert_eq!(body["body"], "Found in Roscommon");
-}
-
-#[tokio::test]
-async fn test_get_research_note_not_found() {
-    let app = setup().await;
-    let response = app.oneshot(get("/api/notes/nonexistent")).await.unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn test_update_research_note() {
-    let app = setup().await;
-
-    let create_resp = app
-        .clone()
-        .oneshot(post_json(
-            "/api/notes",
-            json!({"title": "Draft", "trees": [TEST_TREE]}),
-        ))
-        .await
-        .unwrap();
-    let created = response_json(create_resp).await;
-    let note_id = record_id(&created);
-
-    let response = app
-        .clone()
-        .oneshot(put_json(
-            &format!("/api/notes/{}", note_id),
-            json!({"title": "Revised Title", "body": "Updated body content", "trees": [TEST_TREE]}),
-        ))
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response_json(response).await;
-    assert_eq!(body["title"], "Revised Title");
-    assert_eq!(body["body"], "Updated body content");
-}
-
-#[tokio::test]
-async fn test_update_research_note_not_found() {
-    let app = setup().await;
-    let response = app
-        .oneshot(put_json(
-            "/api/notes/nonexistent",
-            json!({"title": "Ghost Note"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn test_delete_research_note_returns_204() {
-    let app = setup().await;
-
-    let create_resp = app
-        .clone()
-        .oneshot(post_json(
-            "/api/notes",
-            json!({"title": "To Delete", "trees": [TEST_TREE]}),
-        ))
-        .await
-        .unwrap();
-    let created = response_json(create_resp).await;
-    let note_id = record_id(&created);
-
-    let response = app
-        .clone()
-        .oneshot(delete(&format!("/api/notes/{}", note_id)))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
-
-    // Confirm gone
-    let response = app
-        .oneshot(get(&format!("/api/notes/{}", note_id)))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn test_delete_research_note_not_found() {
-    let app = setup().await;
-    let response = app.oneshot(delete("/api/notes/phantom")).await.unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn test_set_note_folder() {
-    let app = setup().await;
-
-    let create_resp = app
-        .clone()
-        .oneshot(post_json(
-            "/api/notes",
-            json!({"title": "Note", "trees": [TEST_TREE]}),
-        ))
-        .await
-        .unwrap();
-    let created = response_json(create_resp).await;
-    let note_id = record_id(&created);
-
-    // Assign to a folder
-    let response = app
-        .clone()
-        .oneshot(patch_json(
-            &format!("/api/notes/{}/folder", note_id),
-            json!({"folder_id": "research_folder:abc123"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response_json(response).await;
-    assert_eq!(body["folder_id"], "research_folder:abc123");
-
-    // Unfile from folder
-    let response = app
-        .clone()
-        .oneshot(patch_json(
-            &format!("/api/notes/{}/folder", note_id),
-            json!({"folder_id": null}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response_json(response).await;
-    assert!(body["folder_id"].is_null());
-}
+//
+// The 11 tests that lived here tested the old SurrealDB-backed research_note
+// handlers directly (request/response shapes with `trees: Vec<String>`,
+// `is_shared: bool`, a client-supplied `created_by`) -- all obsolete now that
+// `/api/notes/*` is backed by tack-server via `tack_client.rs` (Phase 3 of
+// the notes migration, `/Users/colin/.claude/plans/linked-roaming-rabbit.md`;
+// see `handlers/research_note.rs`'s own module doc comment for the full
+// design). Removed rather than left failing or silently ignored.
+//
+// Not replaced with an equivalent mock-tack-server test suite in this same
+// change -- that's a real, separate piece of infrastructure (see
+// `tack-server/src/notes_acl.rs`'s own one-shot raw-TCP mock server for the
+// shape it'd need), out of scope for this PR. Verified instead by a real
+// live run against local dev (clann-server + tack-server + ullav-user-
+// management), documented in this PR's own description: create/list/get/
+// update/delete/set-folder/reply, for both a team-linked tree and a
+// personal (team-less) one, including the "personal note rejects folder
+// filing" and "team-less tree rejects non-private visibility" error paths.
 
 // ── User AI Settings ──────────────────────────────────────────────────────────
 

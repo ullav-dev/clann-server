@@ -129,6 +129,7 @@ pub fn build_router(
     enable_docs: bool,
     validator: Option<ullav_mcp_auth::TokenValidator>,
     mcp: Option<McpConfig>,
+    tack_client: crate::tack_client::TackClient,
 ) -> Router {
     let mut router = Router::new();
 
@@ -280,5 +281,9 @@ pub fn build_router(
         router = router.merge(pr_router).merge(mcp_router);
     }
 
-    router.with_state(db)
+    // Extension, not State -- research_note.rs/research_folder.rs are the
+    // only consumers, same reasoning ClannAuth itself already uses (a
+    // cross-cutting dependency layered on top, not threaded through every
+    // handler's State<Db> signature).
+    router.layer(Extension(tack_client)).with_state(db)
 }
