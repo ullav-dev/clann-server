@@ -51,6 +51,14 @@ pub struct ClannAuth {
     /// Login username from the JWT `username` claim.
     /// Empty for tokens issued before this claim was added (very old tokens).
     pub username: String,
+    /// The full `Authorization` header value as received (`"Bearer <jwt>"`),
+    /// forwarded as-is to tack-server by `tack_client.rs` -- clann-server
+    /// never mints a separate service credential for user-facing calls, see
+    /// that module's own doc comment. Empty in dev/test mode (no
+    /// `TokenValidator` configured) -- any live tack_client call in that
+    /// mode will fail with a real auth error, same as every other
+    /// live-network dependency dev mode doesn't stub out.
+    pub raw_authorization: String,
     /// Plan tier: "individual", "family", "professional", "enterprise".
     pub tier: String,
     /// Active team memberships: map of team UUID → positional role ("owner"|"leader"|"member").
@@ -132,6 +140,7 @@ pub async fn jwt_middleware(
         None => ClannAuth {
             user_id: String::new(),
             username: String::new(),
+            raw_authorization: String::new(),
             tier: "enterprise".to_string(),
             teams: HashMap::new(),
             clann_roles: HashMap::new(),
@@ -147,6 +156,7 @@ pub async fn jwt_middleware(
             match token {
                 None => return unauthorized("Missing Authorization header"),
                 Some(token) => {
+                    let raw_authorization = format!("Bearer {token}");
                     match v.validate_as::<RawClaims>(&token).await {
                         Err(e) => return unauthorized(&format!("Invalid token: {e}")),
                         Ok(raw) => {
@@ -168,7 +178,7 @@ pub async fn jwt_middleware(
                                 }
                                 teams.insert(id, claim.role);
                             }
-                            ClannAuth { user_id: raw.sub, username: raw.username, tier, teams, clann_roles }
+                            ClannAuth { user_id: raw.sub, username: raw.username, raw_authorization, tier, teams, clann_roles }
                         }
                     }
                 }
