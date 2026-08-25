@@ -15,6 +15,10 @@ pub struct Config {
     pub oauth2_issuer: String,
     /// RFC 9728 canonical URI for this MCP resource server — used as the OAuth2 audience.
     pub mcp_canonical_uri: String,
+    /// Base URL of tack-server's own API -- the Phase 3 notes/folders
+    /// handlers proxy through here via `tack_client.rs` instead of
+    /// SurrealDB directly (see that module's own doc comment).
+    pub tack_api_url: String,
 }
 
 impl Config {
@@ -42,6 +46,8 @@ impl Config {
                 .unwrap_or_else(|_| "http://localhost:8081".into()),
             mcp_canonical_uri: std::env::var("CLANN_MCP_CANONICAL_URI")
                 .unwrap_or_else(|_| "http://localhost:3000".into()),
+            tack_api_url: std::env::var("TACK_API_URL")
+                .unwrap_or_else(|_| "http://localhost:8087".into()),
         }
     }
 }

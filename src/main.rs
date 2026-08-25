@@ -1,4 +1,4 @@
-use clann_server::{config, db, routes};
+use clann_server::{config, db, routes, tack_client::TackClient};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use ullav_mcp_auth::TokenValidator;
 
@@ -27,12 +27,15 @@ async fn main() -> anyhow::Result<()> {
         jwks_url: config.oauth2_jwks_url.clone(),
     };
 
+    let tack_client = TackClient::new(reqwest::Client::new(), config.tack_api_url.clone());
+
     let router = routes::build_router(
         db,
         config.upload_dir.clone(),
         config.enable_docs,
         Some(validator),
         Some(mcp_config),
+        tack_client,
     );
 
     let addr = format!("0.0.0.0:{}", config.server_port);

@@ -47,6 +47,11 @@ pub enum AppError {
 
     #[error("tack-server unreachable: {0}")]
     TackUnreachable(String),
+
+    /// Genuine server-side data inconsistency (e.g. a malformed UUID stored
+    /// where one is expected) -- never triggerable by a client's own input.
+    #[error("Internal error: {0}")]
+    Internal(String),
 }
 
 impl IntoResponse for AppError {
@@ -68,6 +73,7 @@ impl IntoResponse for AppError {
                         msg.clone(),
                     ),
                     AppError::TackUnreachable(msg) => (StatusCode::BAD_GATEWAY, msg.clone()),
+                    AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
                     AppError::Conflict(_) => unreachable!(),
                 };
                 (status, Json(json!({ "error": message }))).into_response()

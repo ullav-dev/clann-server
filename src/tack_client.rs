@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Visibility {
     Private,
@@ -129,10 +129,15 @@ impl TackClient {
     /// original authorship/timestamps — see this module's own doc comment).
     /// Live handler calls always leave both `None`.
     #[allow(clippy::too_many_arguments)]
+    /// `team_id: None` creates a genuinely personal, team-less note --
+    /// only valid with `visibility: Private` (tack-server 400s otherwise).
+    /// See `handlers::research_note`'s own module doc comment for the
+    /// live-caller resolution rule.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_note(
         &self,
         auth: &str,
-        team_id: Uuid,
+        team_id: Option<Uuid>,
         visibility: Visibility,
         title: &str,
         body_markdown: &str,
@@ -142,7 +147,8 @@ impl TackClient {
     ) -> Result<TackNote, AppError> {
         #[derive(Serialize)]
         struct Body<'a> {
-            team_id: Uuid,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            team_id: Option<Uuid>,
             visibility: Visibility,
             title: &'a str,
             body_markdown: &'a str,
@@ -341,6 +347,34 @@ impl TackClient {
             .http
             .get(self.url("/notes"))
             .query(&[("team_id", team_id.to_string()), ("limit", "100".into())])
+            .header(reqwest::header::AUTHORIZATION, auth)
+            .send()
+            .await
+            .map_err(|e| AppError::TackUnreachable(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(Self::error_for_status(resp).await);
+        }
+        resp.json().await.map_err(|e| AppError::TackUnreachable(e.to_string()))
+    }
+
+    /// Top-level notes attached to an external entity, oldest-first — the
+    /// live-handler equivalent of `GET /notes/by-entity`, used here to list
+    /// a Clann tree's own notes uniformly whether the tree is team-linked
+    /// or personal (team-less). Deliberately preferred over `list_team_
+    /// notes` for this: a team's own notes aren't necessarily scoped to one
+    /// tree (nothing stops two trees sharing a team_id), and a personal
+    /// tree has no team to scope by at all, whereas every note this method
+    /// returns is filtered by tack-server's own `can_view` and by the exact
+    /// tree entity, matching what the Clann UI actually needs to show. Not
+    /// paginated -- see tack-server's own doc comment on `GET /notes/
+    /// by-entity` (entity-attached note counts are small in practice);
+    /// accepted at Clann's current real scale, same as every other
+    /// consumer of this endpoint.
+    pub async fn list_notes_by_entity(&self, auth: &str, entity_id: &str) -> Result<Vec<TackNote>, AppError> {
+        let resp = self
+            .http
+            .get(self.url("/notes/by-entity"))
+            .query(&[("owning_service", "clann"), ("entity_type", "tree"), ("entity_id", entity_id)])
             .header(reqwest::header::AUTHORIZATION, auth)
             .send()
             .await
