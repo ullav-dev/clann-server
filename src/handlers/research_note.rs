@@ -23,23 +23,29 @@
 //! (id/name/created_by) -- it's genuinely personal-per-user, not
 //! team-or-tree-scoped (`created_by`+`name` UNIQUE, no team/tree column at
 //! all), so it has no 1:1 tack equivalent (tack's own `note_folders` are
-//! always `team_id`-scoped). A Clann folder resolves to a real tack folder
-//! only when a *team* note is actually filed into it, on demand
-//! (`resolve_or_create_tack_folder`), reusing `tack_migration_state` (kind
-//! = "folder") as the durable `clann_folder_id -> tack_folder_id` map --
-//! that table already existed for exactly this key shape (originally meant
-//! for the backfill's own bookkeeping, which in practice uses its own
-//! `--state-file` instead and never wrote here, so this handler is this
-//! table's first real writer). A personal note can never be filed --
-//! tack's own `POST/PATCH /notes` reject it outright, enforced there, not
-//! re-implemented here.
+//! always `team_id`-scoped). A *team* note's filing resolves to a real tack
+//! folder on demand (`resolve_or_create_tack_folder`), reusing
+//! `tack_migration_state` (kind = "folder") as the durable
+//! `clann_folder_id -> tack_folder_id` map -- that table already existed
+//! for exactly this key shape (originally meant for the backfill's own
+//! bookkeeping, which in practice uses its own `--state-file` instead and
+//! never wrote here, so this handler is this table's first real writer).
 //!
-//! **Known, deliberate regression** (flagged in this PR, not discovered
-//! later): folders stop applying to personal notes. Checked directly
-//! against the last production dry-run: 5 of 6 real migrated notes are
-//! personal. The Clann UI's folder sidebar and per-note folder picker
-//! become dead controls for almost every note a real user has, until/unless
-//! a real per-user (not per-team) filing concept is designed for tack.
+//! A *personal* note's filing has no tack folder to resolve at all (tack's
+//! `note_folders` requires a `team_id`, and a personal note never has one)
+//! -- it's recorded purely as clann-server-side metadata, in
+//! `tack_note_meta.legacy_folder_id` (the same sidecar column a *team*
+//! note's Clann folder id is also mirrored into, for the `note.folder_id
+//! === folder.id` comparison the frontend already relies on), never passed
+//! to tack's own `POST`/`PATCH /notes`. This is sound precisely because a
+//! personal note is always private and only ever visible to its own
+//! creator (enforced by tack-server itself) -- filing it into one of that
+//! same creator's own personal folders raises no ACL question a team
+//! folder would. An earlier version of this handler rejected `folder_id`
+//! outright for a personal note, on the mistaken assumption that "needs a
+//! real tack folder" and "can be filed at all" were the same constraint --
+//! they aren't; the sidecar was already unconditional, just unreachable
+//! for personal notes because of that guard.
 //!
 //! Reply policy: tack's own `create_reply` only requires `can_view` on the
 //! parent (creator or admin, or any team/org member for a shared note) --
@@ -275,14 +281,19 @@ pub async fn create_research_note(
     let tree = resolve_tree(&db, &payload.tree).await?;
     let team_id = resolve_team_for_tree(&tree, payload.visibility)?;
 
+    // Only a *team* note's filing needs a real tack folder (tack's own
+    // `note_folders` are always team_id-scoped) -- a personal note's
+    // filing is purely a clann-server-side tag, recorded below in
+    // `tack_note_meta.legacy_folder_id` only, never passed to tack's own
+    // `POST /notes`. This is safe precisely because a personal note is
+    // always private and only ever visible to its own creator (enforced by
+    // tack-server itself) -- filing it into one of that same creator's own
+    // personal folders raises no ACL question the way a team folder would.
     let folder_uuid = match (&payload.folder_id, team_id) {
-        (Some(_), None) => {
-            return Err(AppError::BadRequest("A personal note (no team on this tree) can't be filed into a folder.".into()));
-        }
         (Some(clann_folder_id), Some(team_uuid)) => {
             Some(resolve_or_create_tack_folder(&db, &tack, &auth.raw_authorization, clann_folder_id, team_uuid).await?)
         }
-        (None, _) => None,
+        _ => None,
     };
 
     let note = tack
@@ -444,17 +455,22 @@ pub async fn set_note_folder(
 ) -> Result<Json<ClannNote>, AppError> {
     let note = tack.get_note(&auth.raw_authorization, note_id).await?.ok_or(AppError::NotFound)?;
 
-    let tack_folder_id = match (&payload.folder_id, note.team_id) {
-        (Some(_), None) => {
-            return Err(AppError::BadRequest("This note has no team, so it can't be filed into a folder.".into()));
+    // Same reasoning as `create_research_note`'s own comment: only a team
+    // note's filing needs a real tack folder. A personal note has no tack
+    // folder_id to update at all -- skip that call entirely and record the
+    // filing purely in the sidecar below.
+    let updated = match note.team_id {
+        Some(team_uuid) => {
+            let tack_folder_id = match &payload.folder_id {
+                Some(clann_folder_id) => {
+                    Some(resolve_or_create_tack_folder(&db, &tack, &auth.raw_authorization, clann_folder_id, team_uuid).await?)
+                }
+                None => None,
+            };
+            tack.update_note(&auth.raw_authorization, note_id, None, None, None, Some(tack_folder_id)).await?
         }
-        (Some(clann_folder_id), Some(team_uuid)) => {
-            Some(resolve_or_create_tack_folder(&db, &tack, &auth.raw_authorization, clann_folder_id, team_uuid).await?)
-        }
-        (None, _) => None,
+        None => note,
     };
-
-    let updated = tack.update_note(&auth.raw_authorization, note_id, None, None, None, Some(tack_folder_id)).await?;
     upsert_note_meta(&db, note_id, None, Some(payload.folder_id.clone())).await?;
     let meta = read_note_meta(&db, note_id).await?;
     Ok(Json(ClannNote::from_tack(updated, meta.as_ref().and_then(|m| m.description.clone()), meta.and_then(|m| m.legacy_folder_id))))

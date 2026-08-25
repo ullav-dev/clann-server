@@ -87,8 +87,10 @@ pub struct CreateResearchNote {
     /// create, not the old model's theoretical `Vec<String>`.
     pub tree: String,
     /// A *Clann* folder id (`research_folder`'s own registry), not a tack
-    /// folder UUID. Only valid together with a team-linked tree -- see
-    /// `handlers::research_note::create_research_note`.
+    /// folder UUID -- valid on a note of any tree, team-linked or personal.
+    /// A team note's filing resolves to a real tack folder; a personal
+    /// note's is recorded as metadata only -- see
+    /// `handlers::research_note::create_research_note`'s own doc comment.
     #[serde(default)]
     pub folder_id: Option<String>,
     pub visibility: Visibility,
@@ -117,8 +119,10 @@ pub struct UpdateResearchNote {
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SetNoteFolderPayload {
-    /// A Clann folder id, or `null` to unfile. Rejected outright for a
-    /// personal (team-less) note -- tack has no folder concept for those.
+    /// A Clann folder id, or `null` to unfile. Valid on a personal
+    /// (team-less) note too -- recorded as metadata only, since tack itself
+    /// has no folder concept for those; see `handlers::research_note::
+    /// set_note_folder`'s own doc comment.
     pub folder_id: Option<String>,
 }
 
