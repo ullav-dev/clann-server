@@ -300,7 +300,11 @@ pub async fn create_research_note(
         .create_note(&auth.raw_authorization, team_id, payload.visibility, &payload.title, &payload.body, folder_uuid, None, None)
         .await?;
 
-    let _ = tack.attach(&auth.raw_authorization, note.id, "clann", "tree", &tree.id).await;
+    // The attachment is what makes the note appear in the tree's own list
+    // (`list_notes_by_entity` joins through `content_attachments`). A note
+    // created but not attached is invisible in the Clann UI, so a failed
+    // attach must surface as an error rather than being silently discarded.
+    tack.attach(&auth.raw_authorization, note.id, "clann", "tree", &tree.id).await?;
 
     if payload.description.is_some() || payload.folder_id.is_some() {
         upsert_note_meta(&db, note.id, Some(payload.description.clone()), Some(payload.folder_id.clone())).await?;
