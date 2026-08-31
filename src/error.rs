@@ -68,6 +68,19 @@ impl IntoResponse for AppError {
                     AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
                     AppError::InvalidRelType(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
                     AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+                    // A tack-server 401 means tack rejected the JWT we forwarded
+                    // it -- an upstream dependency/auth-config failure, NOT the
+                    // caller's own clann session expiring. Relaying it verbatim
+                    // makes the webapp treat it as session death (any 401 there
+                    // dispatches `auth:unauthorized` -> logout -> "session
+                    // expired"), so a single failed notes fetch logs the user
+                    // out of the whole app. Surface it as a gateway error like
+                    // TackUnreachable instead. Other tack 4xx (403 note-ACL,
+                    // 404, 400, 409) are genuinely client-meaningful -> relayed.
+                    AppError::TackUpstream(401, _) => (
+                        StatusCode::BAD_GATEWAY,
+                        "notes service rejected the request".to_string(),
+                    ),
                     AppError::TackUpstream(code, msg) => (
                         StatusCode::from_u16(*code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                         msg.clone(),
